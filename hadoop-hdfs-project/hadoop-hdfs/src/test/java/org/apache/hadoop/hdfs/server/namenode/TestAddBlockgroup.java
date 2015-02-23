@@ -26,6 +26,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.junit.After;
 import org.junit.Before;
@@ -44,7 +45,7 @@ public class TestAddBlockgroup {
   private final short NUM_DATANODES = GROUP_SIZE;
 
   private static final int BLOCKSIZE = 1024;
-  private static final short REPLICATION = 3;
+  private static final short REPLICATION = 1;
 
   private MiniDFSCluster cluster;
   private Configuration conf;
@@ -72,13 +73,18 @@ public class TestAddBlockgroup {
     DistributedFileSystem fs = cluster.getFileSystem();
     FSDirectory fsdir = cluster.getNamesystem().getFSDirectory();
 
-    final Path file1 = new Path("/file1");
-    DFSTestUtil.createFile(fs, file1, BLOCKSIZE * 2, REPLICATION, 0L);
-    INodeFile file1Node = fsdir.getINode4Write(file1.toString()).asFile();
-    BlockInfoContiguous[] file1Blocks = file1Node.getBlocks();
-    assertEquals(2, file1Blocks.length);
-    assertEquals(GROUP_SIZE, file1Blocks[0].numNodes());
+    final Path file = new Path("/file");
+    fs.create(file);
+    LocatedBlock lb = fs.getClient().getNamenode().addBlock(file.toString(),
+        fs.getClient().getClientName(), null, null,
+        INodeId.GRANDFATHER_INODE_ID, null);
+    fs.getClient().getNamenode().addBlock(file.toString(),
+        fs.getClient().getClientName(), lb.getBlock(), null,
+        INodeId.GRANDFATHER_INODE_ID, null);
+    INodeFile file1Node = fsdir.getINode4Write(file.toString()).asFile();
+    BlockInfoContiguous[] fileBlocks = file1Node.getBlocks();
+    assertEquals(2, fileBlocks.length);
     assertEquals(HdfsConstants.MAX_BLOCKS_IN_GROUP,
-        file1Blocks[1].getBlockId() - file1Blocks[0].getBlockId());
+        fileBlocks[1].getBlockId() - fileBlocks[0].getBlockId());
   }
 }

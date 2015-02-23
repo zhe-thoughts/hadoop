@@ -31,6 +31,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.BufferOverflowException;
+import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,6 +39,8 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -87,6 +90,8 @@ import org.apache.hadoop.hdfs.server.namenode.SafeModeException;
 import org.apache.hadoop.hdfs.util.ByteArrayManager;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.io.erasurecode.rawcoder.JRSRawEncoder;
+import org.apache.hadoop.io.erasurecode.rawcoder.RawErasureEncoder;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.AccessControlException;
@@ -147,7 +152,6 @@ public class DFSOutputStream extends FSOutputSummer
   private final DFSClient dfsClient;
   private final long dfsclientSlowLogThresholdMs;
   private final ByteArrayManager byteArrayManager;
-  private Socket s;
   // closed is accessed by different threads under different locks.
   private volatile boolean closed = false;
 
@@ -159,14 +163,14 @@ public class DFSOutputStream extends FSOutputSummer
   private final int bytesPerChecksum; 
 
   // both dataQueue and ackQueue are protected by dataQueue lock
-  private final LinkedList<Packet> dataQueue = new LinkedList<Packet>();
-  private final LinkedList<Packet> ackQueue = new LinkedList<Packet>();
+  private final LinkedList<LinkedList<Packet>> dataQueues =
+                                          new LinkedList<LinkedList<Packet>>();
+  private final LinkedList<LinkedList<Packet>> ackQueues =
+                                          new LinkedList<LinkedList<Packet>>();
   private Packet currentPacket = null;
-  private DataStreamer streamer;
-  private long currentSeqno = 0;
-  private long lastQueuedSeqno = -1;
-  private long lastAckedSeqno = -1;
-  private long bytesCurBlock = 0; // bytes written in current block
+  private final LinkedList<DataStreamer> streamers =
+                                          new LinkedList<DataStreamer>();
+
   private int packetSize = 0; // write packet size, not including the header.
   private int chunksPerPacket = 0;
   private final AtomicReference<IOException> lastException = new AtomicReference<IOException>();
@@ -184,6 +188,42 @@ public class DFSOutputStream extends FSOutputSummer
   private FileEncryptionInfo fileEncryptionInfo;
   private static final BlockStoragePolicySuite blockStoragePolicySuite =
       BlockStoragePolicySuite.createDefaultSuite();
+
+  //Indicates whether the file is under striping layout
+  private final boolean stripingLayout;
+  // Size of each striping cell, must be a multiple of
+  //{@link bytesPerChecksum}
+  private int cellSize = 1024 * 1024;
+  private ByteBuffer[] cellBuffers;
+  private int[] sizeOfCellInBuffer;
+  private short blockGroupSize = HdfsConstants.NUM_DATA_BLOCKS
+      + HdfsConstants.NUM_PARITY_BLOCKS;
+  private short blockGroupDataBlocks = HdfsConstants.NUM_DATA_BLOCKS;
+  private int curIdx = 0;
+  private BlockingQueue<LocatedBlock>[] stripeBlocks;
+  // bytes written in current block group
+  private long bytesCurBlockGroup = 0;
+
+  //will be removed later
+  public List<LocatedBlock> blocksForUnitTest = new ArrayList<LocatedBlock>();
+
+  //TODO: HDFS-7781
+  private RawErasureEncoder encoder;
+
+  //Some DataStreamers may write slowly. If the slowest streamer has
+  //MaxBlockInQueue blocks unprocessed, the first streamer will wait
+  //for it. We can get the value from configuration.
+  private int MaxBlockInQueue = 1;
+  //how many seconds the first streamer waits for putting a LocatedBlock
+  //to a slow streamer's block queue.
+  private int MaxTimeWaitForPuttingBlockInSecond = 90;
+  //how many seconds a streamer to get a block from its block queue.
+  private int MaxTimeWaitForGettingBlockInSecond = 90;
+
+  //or we can get cellSize from config
+  public void setCellSize(int cellSize){
+    this.cellSize = cellSize;
+  }
 
   /** Use {@link ByteArrayManager} to create buffer for non-heartbeat packets.*/
   private Packet createPacket(int packetSize, int chunksPerPkt, long offsetInBlock,
@@ -270,6 +310,18 @@ public class DFSOutputStream extends FSOutputSummer
         throw new BufferOverflowException();
       }
       System.arraycopy(inarray, off, buf, dataPos, len);
+      dataPos += len;
+    }
+
+    synchronized void writeData(ByteBuffer inBuffer, int len)
+        throws ClosedChannelException {
+      checkBuffer();
+      len =  len > inBuffer.remaining() ? inBuffer.remaining() : len;
+      if (dataPos + len > buf.length) {
+        throw new BufferOverflowException();
+      }
+      for(int i = 0; i < len; i++)
+        buf[dataPos + i] = inBuffer.get();
       dataPos += len;
     }
 
@@ -424,16 +476,56 @@ public class DFSOutputStream extends FSOutputSummer
     private final boolean isAppend;
 
     private final Span traceSpan;
+    private short index = 0;
+    private final LinkedList<Packet> dataQueue;
+    private final LinkedList<Packet> ackQueue;
+    private Socket s;
+    private long currentSeqno = 0;
+    private long lastQueuedSeqno = -1;
+    private long lastAckedSeqno = -1;
+    private long bytesCurBlock = 0; // bytes written in current block
+    public Socket getSocket(){
+      return s;
+    }
+    public void setSocket(Socket s){
+      this.s = s;
+    }
+    public long getAndIncCurrentSeqno(){
+      long old = this.currentSeqno;
+      this.currentSeqno ++;
+      return old;
+    }
+    public long getLastQueuedSeqno(){
+      return lastQueuedSeqno;
+    }
+    public void setLastQueuedSeqno(long lastQueuedSeqno){
+      this.lastQueuedSeqno = lastQueuedSeqno;
+    }
+    public long getLastAckedSeqno(){
+      return lastAckedSeqno;
+    }
+    public long getBytesCurBlock(){
+      return bytesCurBlock;
+    }
+    public void setBytesCurBlock(long bytesCurBlock) {
+      this.bytesCurBlock = bytesCurBlock;
+    }
+    public void incBytesCurBlock(long len) {
+      this.bytesCurBlock += len;
+    }
 
     /**
      * construction with tracing info
      */
-    private DataStreamer(HdfsFileStatus stat, ExtendedBlock block, Span span) {
+    private DataStreamer(HdfsFileStatus stat, ExtendedBlock block, Span span, short index) {
       isAppend = false;
       isLazyPersistFile = isLazyPersist(stat);
       this.block = block;
       stage = BlockConstructionStage.PIPELINE_SETUP_CREATE;
       traceSpan = span;
+      this.index = index;
+      dataQueue = dataQueues.get(index);
+      ackQueue = ackQueues.get(index);
     }
     
     /**
@@ -444,16 +536,19 @@ public class DFSOutputStream extends FSOutputSummer
      * @throws IOException if error occurs
      */
     private DataStreamer(LocatedBlock lastBlock, HdfsFileStatus stat,
-        int bytesPerChecksum, Span span) throws IOException {
+                         int bytesPerChecksum, Span span, short index) throws IOException {
       isAppend = true;
       stage = BlockConstructionStage.PIPELINE_SETUP_APPEND;
       traceSpan = span;
+      this.index = index;
       block = lastBlock.getBlock();
       bytesSent = block.getNumBytes();
       accessToken = lastBlock.getBlockToken();
       isLazyPersistFile = isLazyPersist(stat);
       long usedInLastBlock = stat.getLen() % blockSize;
       int freeInLastBlock = (int)(blockSize - usedInLastBlock);
+      dataQueue = dataQueues.get(index);
+      ackQueue = ackQueues.get(index);
 
       // calculate the amount of free space in the pre-existing 
       // last crc chunk
@@ -1343,7 +1438,8 @@ public class DFSOutputStream extends FSOutputSummer
      * Must get block ID and the IDs of the destinations from the namenode.
      * Returns the list of target datanodes.
      */
-    private LocatedBlock nextBlockOutputStream() throws IOException {
+    private LocatedBlock nextBlockOutputStream()
+        throws IOException, InterruptedException {
       LocatedBlock lb = null;
       DatanodeInfo[] nodes = null;
       StorageType[] storageTypes = null;
@@ -1362,8 +1458,44 @@ public class DFSOutputStream extends FSOutputSummer
             .keySet()
             .toArray(new DatanodeInfo[0]);
         block = oldBlock;
-        lb = locateFollowingBlock(startTime,
-            excluded.length > 0 ? excluded : null);
+
+        if (index == 0) {
+          lb = locateFollowingBlock(startTime,
+              excluded.length > 0 ? excluded : null);
+          if (stripingLayout) {
+            LocatedBlock[] blocks = convertGroupToBlocks(lb);
+            //will be removed later
+            blocksForUnitTest.addAll(Arrays.asList(blocks));
+            assert blocks.length == blockGroupSize :
+                "Fail to get block group from namenode: blockGroupSize: " +
+                    blockGroupSize + ", blocks.length: " + blocks.length;
+            lb = blocks[0];
+            for(int i = 1; i < blocks.length; i++){
+              //wait MaxTimeWaitForPuttingBlockInSecond seconds
+              // if the block has not been taken from the queue
+              boolean offSuccess = stripeBlocks[i].offer(blocks[i],
+                  MaxTimeWaitForPuttingBlockInSecond, TimeUnit.SECONDS );
+              if(!offSuccess){
+                String msg = "Fail to put block to stripeBlocks. i = " + i;
+                DFSClient.LOG.info(msg);
+                throw new IOException(msg);
+              } else {
+                DFSClient.LOG.debug("Allocate a new block to a streamer. i = " + i
+                    + ", block: " + blocks[i]);
+              }
+            }
+          }
+        } else {
+          try {
+            //wait MaxTimeWaitForGettingBlockInSecond seconds
+            //to get a block from the queue
+            lb = stripeBlocks[index].poll(MaxTimeWaitForGettingBlockInSecond, TimeUnit.SECONDS);
+          } catch (InterruptedException ie){
+            DFSClient.LOG.info("InterruptedException received when retrieving a block" +
+                "from stripeBlocks, ie = " + ie);
+            break;
+          }
+        }
         block = lb.getBlock();
         block.setNumBytes(0);
         bytesSent = 0;
@@ -1423,11 +1555,11 @@ public class DFSOutputStream extends FSOutputSummer
           assert null == blockReplyStream : "Previous blockReplyStream unclosed";
           s = createSocketForPipeline(nodes[0], nodes.length, dfsClient);
           long writeTimeout = dfsClient.getDatanodeWriteTimeout(nodes.length);
-          
+
           OutputStream unbufOut = NetUtils.getOutputStream(s, writeTimeout);
           InputStream unbufIn = NetUtils.getInputStream(s);
           IOStreamPair saslStreams = dfsClient.saslClient.socketSend(s,
-            unbufOut, unbufIn, dfsClient, accessToken, nodes[0]);
+              unbufOut, unbufIn, dfsClient, accessToken, nodes[0]);
           unbufOut = saslStreams.out;
           unbufIn = saslStreams.in;
           out = new DataOutputStream(new BufferedOutputStream(unbufOut,
@@ -1674,10 +1806,10 @@ public class DFSOutputStream extends FSOutputSummer
   //
   @VisibleForTesting
   public synchronized DatanodeInfo[] getPipeline() {
-    if (streamer == null) {
+    if (streamers.get(0) == null) {
       return null;
     }
-    DatanodeInfo[] currentNodes = streamer.getNodes();
+    DatanodeInfo[] currentNodes = streamers.get(0).getNodes();
     if (currentNodes == null) {
       return null;
     }
@@ -1714,6 +1846,7 @@ public class DFSOutputStream extends FSOutputSummer
     this.progress = progress;
     this.cachingStrategy = new AtomicReference<CachingStrategy>(
         dfsClient.getDefaultWriteCachingStrategy());
+    this.stripingLayout = stat.getStripingLayout();
     if ((progress != null) && DFSClient.LOG.isDebugEnabled()) {
       DFSClient.LOG.debug(
           "Set non-null progress callback on DFSOutputStream " + src);
@@ -1749,10 +1882,36 @@ public class DFSOutputStream extends FSOutputSummer
     if (Trace.isTracing()) {
       traceSpan = Trace.startSpan(this.getClass().getSimpleName()).detach();
     }
-    streamer = new DataStreamer(stat, null, traceSpan);
-    if (favoredNodes != null && favoredNodes.length != 0) {
-      streamer.setFavoredNodes(favoredNodes);
+
+    if(stripingLayout){
+      cellBuffers = new ByteBuffer[blockGroupSize];
+      sizeOfCellInBuffer = new int[blockGroupSize];
+      stripeBlocks = new BlockingQueue[blockGroupSize];
+      for(int i = 0; i < blockGroupSize; i++) {
+        try{
+          stripeBlocks[i] = new LinkedBlockingQueue<LocatedBlock>(MaxBlockInQueue);
+          cellBuffers[i] = ByteBuffer.wrap(byteArrayManager.newByteArray(cellSize));
+        }catch (InterruptedException ie){
+          cellBuffers[i] = ByteBuffer.allocate(cellSize);
+        }
+      }
+      encoder = new JRSRawEncoder();
+      encoder.initialize(blockGroupDataBlocks,
+                         blockGroupSize - blockGroupDataBlocks, cellSize);
+    }else{
+      blockGroupSize = 1;
+      blockGroupDataBlocks = 1;
     }
+    for (int i = 0; i < blockGroupSize; i++) {
+      dataQueues.add(new LinkedList<Packet>());
+      ackQueues.add(new LinkedList<Packet>());
+      DataStreamer streamer = new DataStreamer(stat, null, traceSpan, (short)i);
+      if (favoredNodes != null && favoredNodes.length != 0) {
+        streamer.setFavoredNodes(favoredNodes);
+      }
+      streamers.add(streamer);
+    }
+
   }
 
   static DFSOutputStream newStreamForCreate(DFSClient dfsClient, String src,
@@ -1817,17 +1976,29 @@ public class DFSOutputStream extends FSOutputSummer
       traceSpan = Trace.startSpan(this.getClass().getSimpleName()).detach();
     }
 
+    //Appending to a striping layout file will be supported in the next phase
+    if(stripingLayout)
+      throw new IOException("Not support appending to a striping layout file yet.");
+
+    blockGroupSize = 1;
+    blockGroupDataBlocks = 1;
+    dataQueues.add(new LinkedList<Packet>());
+    ackQueues.add(new LinkedList<Packet>());
+
     // The last partial block of the file has to be filled.
+    DataStreamer streamer;
     if (!toNewBlock && lastBlock != null) {
       // indicate that we are appending to an existing block
-      bytesCurBlock = lastBlock.getBlockSize();
-      streamer = new DataStreamer(lastBlock, stat, bytesPerChecksum, traceSpan);
+      long bytesCurBlock = lastBlock.getBlockSize();
+      streamer = new DataStreamer(lastBlock, stat, bytesPerChecksum, traceSpan, (short)0);
+      streamer.setBytesCurBlock(bytesCurBlock);
     } else {
       computePacketChunkSize(dfsClient.getConf().writePacketSize,
           bytesPerChecksum);
       streamer = new DataStreamer(stat,
-          lastBlock != null ? lastBlock.getBlock() : null, traceSpan);
+          lastBlock != null ? lastBlock.getBlock() : null, traceSpan, (short)0);
     }
+    streamers.add(streamer);
     this.fileEncryptionInfo = stat.getFileEncryptionInfo();
   }
 
@@ -1838,7 +2009,9 @@ public class DFSOutputStream extends FSOutputSummer
     final DFSOutputStream out = new DFSOutputStream(dfsClient, src, toNewBlock,
         progress, lastBlock, stat, checksum);
     if (favoredNodes != null && favoredNodes.length != 0) {
-      out.streamer.setFavoredNodes(favoredNodes);
+      for (DataStreamer streamer : out.streamers) {
+        streamer.setFavoredNodes(favoredNodes);
+      }
     }
     out.start();
     return out;
@@ -1863,25 +2036,26 @@ public class DFSOutputStream extends FSOutputSummer
   }
 
   private void queueCurrentPacket() {
-    synchronized (dataQueue) {
+    synchronized (dataQueues.get(curIdx)) {
       if (currentPacket == null) return;
-      dataQueue.addLast(currentPacket);
-      lastQueuedSeqno = currentPacket.seqno;
+      dataQueues.get(curIdx).addLast(currentPacket);
+      streamers.get(curIdx).setLastQueuedSeqno(currentPacket.seqno);
       if (DFSClient.LOG.isDebugEnabled()) {
         DFSClient.LOG.debug("Queued packet " + currentPacket.seqno);
       }
       currentPacket = null;
-      dataQueue.notifyAll();
+      dataQueues.get(curIdx).notifyAll();
     }
   }
 
   private void waitAndQueueCurrentPacket() throws IOException {
-    synchronized (dataQueue) {
+    synchronized (dataQueues.get(curIdx)) {
       try {
       // If queue is full, then wait till we have enough space
-      while (!isClosed() && dataQueue.size() + ackQueue.size() > dfsClient.getConf().writeMaxPackets) {
+      while (!isClosed() && dataQueues.get(curIdx).size() + ackQueues.get(curIdx).size()
+          > dfsClient.getConf().writeMaxPackets) {
         try {
-          dataQueue.wait();
+          dataQueues.get(curIdx).wait();
         } catch (InterruptedException e) {
           // If we get interrupted while waiting to queue data, we still need to get rid
           // of the current packet. This is because we have an invariant that if
@@ -1901,6 +2075,71 @@ public class DFSOutputStream extends FSOutputSummer
     }
   }
 
+  /**
+   * encode the buffers.
+   * After encoding, flip each buffer.
+   *
+   * @param buffers data buffers + parity buffers
+   */
+  private void encode(ByteBuffer[] buffers){
+    ByteBuffer[] dataBuffers = new ByteBuffer[blockGroupDataBlocks];
+    ByteBuffer[] parityBuffers = new ByteBuffer[blockGroupSize - blockGroupDataBlocks];
+    for(int i = 0; i < blockGroupSize; i++){
+      if(i < blockGroupDataBlocks)
+        dataBuffers[i] = buffers[i];
+      else
+        parityBuffers[i - blockGroupDataBlocks] = buffers[i];
+    }
+    encoder.encode(dataBuffers, parityBuffers);
+  }
+
+  /**
+   * Split a give buffer into packets.
+   *
+   * @param byteBuffer  the data to be splitted into packets
+   * @return
+   * @throws IOException
+   */
+  private List<Packet> generatePackets(ByteBuffer byteBuffer) throws IOException{
+    List<Packet> packets = new ArrayList<Packet>();
+    while(byteBuffer.remaining() > 0){
+      Packet p = createPacket(packetSize, chunksPerPacket,
+          streamers.get(curIdx).getBytesCurBlock(),
+          streamers.get(curIdx).getAndIncCurrentSeqno());
+      int maxBytesToPacket = p.maxChunks * bytesPerChecksum;
+      int toWrite = byteBuffer.remaining() > maxBytesToPacket ?
+                    maxBytesToPacket: byteBuffer.remaining();
+      p.writeData(byteBuffer, toWrite);
+      streamers.get(curIdx).incBytesCurBlock(toWrite);
+      packets.add(p);
+    }
+    return packets;
+  }
+
+  /**
+   * A located block can delegate a block group.
+   * @param locatedBlockGroup located block to be converted
+   * @return  an array of located block, each element delegates
+   *          a block in a block group
+   */
+  public static LocatedBlock[] convertGroupToBlocks(LocatedBlock locatedBlockGroup){
+    ExtendedBlock eb = locatedBlockGroup.getBlock();
+    DatanodeInfo[] locs = locatedBlockGroup.getLocations();
+    String[] storageIDs = locatedBlockGroup.getStorageIDs();
+    StorageType[] storageTypes = locatedBlockGroup.getStorageTypes();
+    Token<BlockTokenIdentifier> blockToken = locatedBlockGroup.getBlockToken();
+    LocatedBlock[] blocks = new LocatedBlock[locs.length];
+    for(int i = 0; i < blocks.length; i++){
+      ExtendedBlock extendedBlock = new ExtendedBlock(eb.getBlockPoolId(),
+          eb.getBlockId() + i, eb.getNumBytes(), eb.getGenerationStamp());
+      blocks[i] = new LocatedBlock(extendedBlock, new DatanodeInfo[]{locs[i]},
+          new String[]{storageIDs[i]}, new StorageType[]{storageTypes[i]});
+      blocks[i].setBlockToken(blockToken);
+    }
+    return blocks;
+  }
+
+
   // @see FSOutputSummer#writeChunk()
   @Override
   protected synchronized void writeChunk(byte[] b, int offset, int len,
@@ -1919,64 +2158,149 @@ public class DFSOutputStream extends FSOutputSummer
     }
 
     if (currentPacket == null) {
-      currentPacket = createPacket(packetSize, chunksPerPacket, 
-          bytesCurBlock, currentSeqno++);
+      currentPacket = createPacket(packetSize, chunksPerPacket,
+          streamers.get(curIdx).getBytesCurBlock(),
+          streamers.get(curIdx).getAndIncCurrentSeqno());
       if (DFSClient.LOG.isDebugEnabled()) {
         DFSClient.LOG.debug("DFSClient writeChunk allocating new packet seqno=" + 
             currentPacket.seqno +
             ", src=" + src +
             ", packetSize=" + packetSize +
             ", chunksPerPacket=" + chunksPerPacket +
-            ", bytesCurBlock=" + bytesCurBlock);
+            ", bytesCurBlock=" + streamers.get(curIdx).getBytesCurBlock());
       }
     }
 
     currentPacket.writeChecksum(checksum, ckoff, cklen);
     currentPacket.writeData(b, offset, len);
     currentPacket.numChunks++;
-    bytesCurBlock += len;
+    streamers.get(curIdx).incBytesCurBlock(len);
 
-    // If packet is full, enqueue it for transmission
-    //
+    //if writing in striping layout, when all data cells in a stripe are ready,
+    //we need to encode them and generate some parity cells. These cells will be
+    //converted to packets and put to their DataStreamer's queue.
+    if (stripingLayout) {
+      //put the data to stripe buffer
+      addToCellBuffer(b, offset, len);
+    }
+
+    // Enqueue a packet for transmission if:
+    // 1. The packet is full;
+    // 2. The streamer has filled up a block; or
+    // 3. The cell buffer is full under the striping layout
     if (currentPacket.numChunks == currentPacket.maxChunks ||
-        bytesCurBlock == blockSize) {
+        streamers.get(curIdx).getBytesCurBlock() == blockSize ||
+        (stripingLayout && sizeOfCellInBuffer[curIdx] == cellSize)) {
       if (DFSClient.LOG.isDebugEnabled()) {
         DFSClient.LOG.debug("DFSClient writeChunk packet full seqno=" +
             currentPacket.seqno +
             ", src=" + src +
-            ", bytesCurBlock=" + bytesCurBlock +
+            ", bytesCurBlock=" + streamers.get(curIdx).getBytesCurBlock() +
             ", blockSize=" + blockSize +
             ", appendChunk=" + appendChunk);
       }
       waitAndQueueCurrentPacket();
 
       // If the reopened file did not end at chunk boundary and the above
-      // write filled up its partial chunk. Tell the summer to generate full 
+      // write filled up its partial chunk. Tell the summer to generate full
       // crc chunks from now on.
-      if (appendChunk && bytesCurBlock%bytesPerChecksum == 0) {
+      if (appendChunk && streamers.get(curIdx).getBytesCurBlock() % bytesPerChecksum == 0) {
         appendChunk = false;
         resetChecksumBufSize();
       }
 
       if (!appendChunk) {
-        int psize = Math.min((int)(blockSize-bytesCurBlock), dfsClient.getConf().writePacketSize);
+        int psize = Math.min((int)(blockSize-streamers.get(curIdx).getBytesCurBlock()),
+            dfsClient.getConf().writePacketSize);
         computePacketChunkSize(psize, bytesPerChecksum);
       }
-      //
-      // if encountering a block boundary, send an empty packet to 
-      // indicate the end of block and reset bytesCurBlock.
-      //
-      if (bytesCurBlock == blockSize) {
-        currentPacket = createPacket(0, 0, bytesCurBlock, currentSeqno++);
-        currentPacket.lastPacketInBlock = true;
-        currentPacket.syncBlock = shouldSyncBlock;
-        waitAndQueueCurrentPacket();
-        bytesCurBlock = 0;
-        lastFlushOffset = 0;
+      encounterBlockBoundary();
+    }
+    // Two extra steps are needed when a striping cell is full:
+    // 1. Forward the current index pointer
+    // 2. Generate parity packets if a full stripe of data cells are present
+    if (stripingLayout) {
+      if (sizeOfCellInBuffer[curIdx] == cellSize) {
+        //move curIdx to next cell
+        curIdx = (curIdx + 1) % blockGroupSize;
+        //check if data cells are all full
+        if (curIdx == blockGroupDataBlocks) {
+          //encode the data cells
+          for(int k = 0; k < blockGroupDataBlocks; k++) {
+            cellBuffers[k].flip();
+          }
+          encode(cellBuffers);
+          for (int i = blockGroupDataBlocks; i < blockGroupSize; i++) {
+            ByteBuffer parityBuffer = cellBuffers[i];
+            List<Packet> packets = generatePackets(parityBuffer);
+            for (Packet p : packets) {
+              currentPacket = p;
+              waitAndQueueCurrentPacket();
+            }
+
+            encounterBlockBoundary();
+            curIdx = (curIdx + 1) % blockGroupSize;
+          }
+          //read next stripe to cellBuffers
+          clearCellBuffers();
+        }
+      } else if(sizeOfCellInBuffer[curIdx] > cellSize){
+        String msg = "Writing a chunk should not overflow buffer.";
+        DFSClient.LOG.info(msg);
+        throw new IOException(msg);
       }
     }
   }
-  
+
+  private void encounterBlockBoundary() throws IOException{
+    //
+    // if encountering a block boundary, send an empty packet to
+    // indicate the end of block and reset bytesCurBlock.
+    //
+    if (streamers.get(curIdx).getBytesCurBlock() == blockSize) {
+      currentPacket = createPacket(0, 0, streamers.get(curIdx).getBytesCurBlock(),
+          streamers.get(curIdx).getAndIncCurrentSeqno());
+      currentPacket.lastPacketInBlock = true;
+      currentPacket.syncBlock = shouldSyncBlock;
+      waitAndQueueCurrentPacket();
+      lastFlushOffset = 0;
+      streamers.get(curIdx).setBytesCurBlock(0);
+    }
+  }
+
+  /**
+   *
+   * @param b
+   * @param off
+   * @param len
+   */
+  private void addToCellBuffer(byte[] b, int off, int len){
+    cellBuffers[curIdx].put(b, off, len);
+    sizeOfCellInBuffer[curIdx] += len;
+  }
+
+  private void clearCellBuffers(){
+    for(int i = 0; i< blockGroupSize; i++)
+      clearCellBuffers(i);
+  }
+  private void clearCellBuffers(int index){
+    sizeOfCellInBuffer[index] = 0;
+    cellBuffers[index].clear();
+  }
+
+  private int getPaddingBytes(){
+    int stripeSize = blockGroupDataBlocks * cellSize;
+    if(bytesCurBlockGroup % stripeSize == 0) {
+      return 0;
+    }
+    return stripeSize - (int)(bytesCurBlockGroup % stripeSize);
+  }
+
+  private void notSupportedInStripingLayout(String headMsg)
+                             throws IOException{
+    if(stripingLayout)
+      throw new IOException(headMsg + " is now not supported for striping layout.");
+  }
   /**
    * Flushes out to all replicas of the block. The data is in the buffers
    * of the DNs but not necessarily in the DN's OS buffers.
@@ -1989,6 +2313,7 @@ public class DFSOutputStream extends FSOutputSummer
    */
   @Override
   public void hflush() throws IOException {
+    notSupportedInStripingLayout("hflush()");
     flushOrSync(false, EnumSet.noneOf(SyncFlag.class));
   }
 
@@ -2028,6 +2353,7 @@ public class DFSOutputStream extends FSOutputSummer
    */
   private void flushOrSync(boolean isSync, EnumSet<SyncFlag> syncFlags)
       throws IOException {
+    notSupportedInStripingLayout("flushOrSync()");
     dfsClient.checkOpen();
     checkClosed();
     try {
@@ -2043,30 +2369,32 @@ public class DFSOutputStream extends FSOutputSummer
 
         if (DFSClient.LOG.isDebugEnabled()) {
           DFSClient.LOG.debug("DFSClient flush(): "
-              + " bytesCurBlock=" + bytesCurBlock
+              + " bytesCurBlock=" + streamers.get(curIdx).getBytesCurBlock()
               + " lastFlushOffset=" + lastFlushOffset
               + " createNewBlock=" + endBlock);
         }
         // Flush only if we haven't already flushed till this offset.
-        if (lastFlushOffset != bytesCurBlock) {
-          assert bytesCurBlock > lastFlushOffset;
+        if (lastFlushOffset != streamers.get(curIdx).getBytesCurBlock()) {
+          assert streamers.get(curIdx).getBytesCurBlock() > lastFlushOffset;
           // record the valid offset of this flush
-          lastFlushOffset = bytesCurBlock;
+          lastFlushOffset = streamers.get(curIdx).getBytesCurBlock();
           if (isSync && currentPacket == null && !endBlock) {
             // Nothing to send right now,
             // but sync was requested.
             // Send an empty packet if we do not end the block right now
             currentPacket = createPacket(packetSize, chunksPerPacket,
-                bytesCurBlock, currentSeqno++);
+                streamers.get(curIdx).getBytesCurBlock(),
+                streamers.get(curIdx).getAndIncCurrentSeqno());
           }
         } else {
-          if (isSync && bytesCurBlock > 0 && !endBlock) {
+          if (isSync && streamers.get(curIdx).getBytesCurBlock() > 0 && !endBlock) {
             // Nothing to send right now,
             // and the block was partially written,
             // and sync was requested.
             // So send an empty sync packet if we do not end the block right now
             currentPacket = createPacket(packetSize, chunksPerPacket,
-                bytesCurBlock, currentSeqno++);
+                streamers.get(curIdx).getBytesCurBlock(),
+                streamers.get(curIdx).getAndIncCurrentSeqno());
           } else if (currentPacket != null) {
             // just discard the current packet since it is already been sent.
             currentPacket.releaseBuffer(byteArrayManager);
@@ -2077,22 +2405,24 @@ public class DFSOutputStream extends FSOutputSummer
           currentPacket.syncBlock = isSync;
           waitAndQueueCurrentPacket();          
         }
-        if (endBlock && bytesCurBlock > 0) {
+        if (endBlock && streamers.get(curIdx).getBytesCurBlock() > 0) {
           // Need to end the current block, thus send an empty packet to
           // indicate this is the end of the block and reset bytesCurBlock
-          currentPacket = createPacket(0, 0, bytesCurBlock, currentSeqno++);
+          currentPacket = createPacket(0, 0, streamers.get(curIdx).getBytesCurBlock(),
+              streamers.get(curIdx).getAndIncCurrentSeqno());
           currentPacket.lastPacketInBlock = true;
           currentPacket.syncBlock = shouldSyncBlock || isSync;
           waitAndQueueCurrentPacket();
-          bytesCurBlock = 0;
+          streamers.get(curIdx).setBytesCurBlock(0);
           lastFlushOffset = 0;
         } else {
           // Restore state of stream. Record the last flush offset
           // of the last full chunk that was flushed.
-          bytesCurBlock -= numKept;
+          streamers.get(curIdx).incBytesCurBlock(-numKept);
+
         }
 
-        toWaitFor = lastQueuedSeqno;
+        toWaitFor = streamers.get(curIdx).getLastQueuedSeqno();
       } // end synchronized
 
       waitForAckedSeqno(toWaitFor);
@@ -2100,8 +2430,9 @@ public class DFSOutputStream extends FSOutputSummer
       // update the block length first time irrespective of flag
       if (updateLength || persistBlocks.get()) {
         synchronized (this) {
-          if (streamer != null && streamer.block != null) {
-            lastBlockLength = streamer.block.getNumBytes();
+          if (streamers.size() > 0 && streamers.get(0) != null
+              && streamers.get(0).block != null) {
+            lastBlockLength = streamers.get(0).block.getNumBytes();
           }
         }
       }
@@ -2125,8 +2456,8 @@ public class DFSOutputStream extends FSOutputSummer
       }
 
       synchronized(this) {
-        if (streamer != null) {
-          streamer.setHflush();
+        if (streamers.size() > 0 && streamers.get(0) != null) {
+          streamers.get(0).setHflush();
         }
       }
     } catch (InterruptedIOException interrupt) {
@@ -2163,10 +2494,10 @@ public class DFSOutputStream extends FSOutputSummer
   public synchronized int getCurrentBlockReplication() throws IOException {
     dfsClient.checkOpen();
     checkClosed();
-    if (streamer == null) {
+    if (streamers.get(0) == null) {
       return blockReplication; // no pipeline, return repl factor of file
     }
-    DatanodeInfo[] currentNodes = streamer.getNodes();
+    DatanodeInfo[] currentNodes = streamers.get(0).getNodes();
     if (currentNodes == null) {
       return blockReplication; // no pipeline, return repl factor of file
     }
@@ -2186,7 +2517,7 @@ public class DFSOutputStream extends FSOutputSummer
       // If there is data in the current buffer, send it across
       //
       queueCurrentPacket();
-      toWaitFor = lastQueuedSeqno;
+      toWaitFor = streamers.get(curIdx).getLastQueuedSeqno();
     }
 
     waitForAckedSeqno(toWaitFor);
@@ -2198,15 +2529,15 @@ public class DFSOutputStream extends FSOutputSummer
     }
     long begin = Time.monotonicNow();
     try {
-      synchronized (dataQueue) {
+      synchronized (dataQueues.get(curIdx)) {
         while (!isClosed()) {
           checkClosed();
-          if (lastAckedSeqno >= seqno) {
+          if (streamers.get(curIdx).getLastAckedSeqno() >= seqno) {
             break;
           }
           try {
-            dataQueue.wait(1000); // when we receive an ack, we notify on
-                                  // dataQueue
+            dataQueues.get(curIdx).wait(1000); // when we receive an ack, we notify on
+            // dataQueue
           } catch (InterruptedException ie) {
             throw new InterruptedIOException(
                 "Interrupted while waiting for data to be acknowledged by pipeline");
@@ -2224,7 +2555,9 @@ public class DFSOutputStream extends FSOutputSummer
   }
 
   private synchronized void start() {
-    streamer.start();
+    for(DataStreamer streamer : streamers) {
+      streamer.start();
+    }
   }
   
   /**
@@ -2235,8 +2568,10 @@ public class DFSOutputStream extends FSOutputSummer
     if (isClosed()) {
       return;
     }
-    streamer.setLastException(new IOException("Lease timeout of "
-        + (dfsClient.getHdfsTimeout()/1000) + " seconds expired."));
+    for(DataStreamer streamer : streamers) {
+      streamer.setLastException(new IOException("Lease timeout of "
+          + (dfsClient.getHdfsTimeout()/1000) + " seconds expired."));
+    }
     closeThreads(true);
     dfsClient.endFileLease(fileId);
   }
@@ -2247,9 +2582,11 @@ public class DFSOutputStream extends FSOutputSummer
 
   void setClosed() {
     closed = true;
-    synchronized (dataQueue) {
-      releaseBuffer(dataQueue, byteArrayManager);
-      releaseBuffer(ackQueue, byteArrayManager);
+    for (int i = 0; i < blockGroupSize; i++) {
+      synchronized (dataQueues.get(i)) {
+        releaseBuffer(dataQueues.get(i), byteArrayManager);
+        releaseBuffer(ackQueues.get(i), byteArrayManager);
+      }
     }
   }
   
@@ -2263,21 +2600,37 @@ public class DFSOutputStream extends FSOutputSummer
   // shutdown datastreamer and responseprocessor threads.
   // interrupt datastreamer if force is true
   private void closeThreads(boolean force) throws IOException {
-    try {
-      streamer.close(force);
-      streamer.join();
-      if (s != null) {
-        s.close();
+    for(DataStreamer streamer : streamers) {
+      try {
+        streamer.close(force);
+        streamer.join();
+        Socket s = streamer.getSocket();
+        if (s != null) {
+          s.close();
+        }
+      } catch (InterruptedException e) {
+        throw new IOException("Failed to shutdown streamer");
+      } finally {
+        streamers.clear();
+        streamer.setSocket(null);
+        setClosed();
       }
-    } catch (InterruptedException e) {
-      throw new IOException("Failed to shutdown streamer");
-    } finally {
-      streamer = null;
-      s = null;
-      setClosed();
     }
   }
-  
+
+  @Override
+  public synchronized void write(int b) throws IOException {
+    super.write(b);
+    bytesCurBlockGroup++;
+  }
+
+  @Override
+  public synchronized void write(byte b[], int off, int len)
+      throws IOException {
+    super.write(b, off, len);
+    bytesCurBlockGroup += len;
+  }
+
   /**
    * Closes this output stream and releases any system 
    * resources associated with this stream.
@@ -2293,22 +2646,36 @@ public class DFSOutputStream extends FSOutputSummer
     }
 
     try {
+      //padding the stream if write in stripe layout
+      if(stripingLayout){
+        int paddingBytes = getPaddingBytes();
+        if(paddingBytes > 0){
+          byte[] zero = new byte[paddingBytes];
+          write(zero, 0 ,paddingBytes);
+        }
+      }
+
       flushBuffer();       // flush from all upper layers
 
       if (currentPacket != null) { 
         waitAndQueueCurrentPacket();
       }
 
-      if (bytesCurBlock != 0) {
-        // send an empty packet to mark the end of the block
-        currentPacket = createPacket(0, 0, bytesCurBlock, currentSeqno++);
-        currentPacket.lastPacketInBlock = true;
-        currentPacket.syncBlock = shouldSyncBlock;
+      for(int i = 0; i < blockGroupSize; i++){
+        curIdx = i;
+        if (streamers.get(curIdx).getBytesCurBlock()!= 0) {
+          // send an empty packet to mark the end of the block
+          currentPacket = createPacket(0, 0, streamers.get(curIdx).getBytesCurBlock(),
+                streamers.get(curIdx).getAndIncCurrentSeqno());
+          currentPacket.lastPacketInBlock = true;
+          currentPacket.syncBlock = shouldSyncBlock;
+        }
+        // flush all data to Datanode
+        flushInternal();
       }
 
-      flushInternal();             // flush all data to Datanodes
       // get last block before destroying the streamer
-      ExtendedBlock lastBlock = streamer.getBlock();
+      ExtendedBlock lastBlock = streamers.get(0).getBlock();
       closeThreads(false);
       completeFile(lastBlock);
       dfsClient.endFileLease(fileId);
@@ -2390,7 +2757,7 @@ public class DFSOutputStream extends FSOutputSummer
    * Returns the access token currently used by streamer, for testing only
    */
   synchronized Token<BlockTokenIdentifier> getBlockToken() {
-    return streamer.getBlockToken();
+    return streamers.get(0).getBlockToken();
   }
 
   @Override
@@ -2407,7 +2774,7 @@ public class DFSOutputStream extends FSOutputSummer
 
   @VisibleForTesting
   ExtendedBlock getBlock() {
-    return streamer.getBlock();
+    return streamers.get(0).getBlock();
   }
 
   @VisibleForTesting

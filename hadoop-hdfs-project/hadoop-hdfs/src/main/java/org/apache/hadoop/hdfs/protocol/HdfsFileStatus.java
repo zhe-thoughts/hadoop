@@ -259,6 +259,11 @@ public class HdfsFileStatus {
     return storagePolicy;
   }
 
+  // TODO: Move EC policy to file XAttr and make it pluggable (HDFS-7337)
+  public final boolean getStripingLayout() {
+    return storagePolicy == HdfsConstants.EC_STORAGE_POLICY_ID;
+  }
+
   public final FileStatus makeQualified(URI defaultUri, Path path) {
     return new FileStatus(getLen(), isDir(), getReplication(),
         getBlockSize(), getModificationTime(),

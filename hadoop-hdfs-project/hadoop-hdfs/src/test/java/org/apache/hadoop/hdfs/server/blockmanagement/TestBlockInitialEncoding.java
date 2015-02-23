@@ -22,6 +22,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.client.HdfsAdmin;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.junit.After;
@@ -35,7 +36,8 @@ import static org.apache.hadoop.hdfs.protocol.HdfsConstants.EC_STORAGE_POLICY_ID
 import static org.junit.Assert.assertEquals;
 
 public class TestBlockInitialEncoding {
-  private final int NUM_OF_DATANODES = 3;
+  private final int NUM_OF_DATANODES = HdfsConstants.NUM_DATA_BLOCKS
+      + HdfsConstants.NUM_PARITY_BLOCKS;
   private Configuration conf;
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
@@ -67,7 +69,7 @@ public class TestBlockInitialEncoding {
     fs.mkdir(testDir, FsPermission.getDirDefault());
     dfsAdmin.setStoragePolicy(testDir, EC_STORAGE_POLICY_NAME);
     final Path ECFilePath = new Path("/test/foo.ec");
-    DFSTestUtil.createFile(fs, ECFilePath, 4 * BLOCK_SIZE, (short) 3, 0);
+    fs.create(ECFilePath);
     INode inode = namesystem.getFSDirectory().getINode(ECFilePath.toString());
     assertEquals(EC_STORAGE_POLICY_ID, inode.getStoragePolicyID());
   }
