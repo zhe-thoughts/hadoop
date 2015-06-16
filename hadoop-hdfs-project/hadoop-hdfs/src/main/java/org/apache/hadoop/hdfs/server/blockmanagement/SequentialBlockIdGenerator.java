@@ -54,6 +54,11 @@ public class SequentialBlockIdGenerator extends SequentialNumber {
     while(isValidBlock(b)) {
       b.setBlockId(super.nextValue());
     }
+    if (b.getBlockId() < 0) {
+      throw new IllegalStateException("All positive block IDs are used, " +
+          "wrapping to negative IDs, " +
+          "which might conflict with erasure coded block groups.");
+    }
     return b.getBlockId();
   }
 
