@@ -249,7 +249,9 @@ class FSDirWriteFileOp {
                                   ExtendedBlock.getLocalBlock(previous));
 
     // allocate new block, record block locations in INode.
-    Block newBlock = fsn.createNewBlock();
+    final boolean isStriped = pendingFile.isStriped();
+    // allocate new block, record block locations in INode.
+    Block newBlock = fsn.createNewBlock(isStriped);
     INodesInPath inodesInPath = INodesInPath.fromINode(pendingFile);
     saveAllocatedBlock(fsn, src, inodesInPath, newBlock, targets);
 
