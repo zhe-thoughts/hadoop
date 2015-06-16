@@ -20,33 +20,34 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import com.google.common.base.Preconditions;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 
 import java.util.ArrayList;
 
-/**
- * Subclass of {@link BlockInfoUnderConstruction}, representing a block under
- * the contiguous (instead of striped) layout.
- */
-public class BlockInfoUnderConstructionContiguous extends
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState.COMPLETE;
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION;
+
+public class BlockInfoUnderConstructionStriped extends
     BlockInfoUnderConstruction {
+  private final StripedBlockStorageOp storageOp;
+
   /**
-   * Create block and set its state to
-   * {@link HdfsServerConstants.BlockUCState#UNDER_CONSTRUCTION}.
+   * Constructor with null storage targets.
    */
-  public BlockInfoUnderConstructionContiguous(Block blk, short replication) {
-    this(blk, replication, HdfsServerConstants.BlockUCState.UNDER_CONSTRUCTION,
-        null);
+  public BlockInfoUnderConstructionStriped(Block blk, ECSchema schema) {
+    this(blk, schema, UNDER_CONSTRUCTION, null);
   }
 
   /**
-   * Create a block that is currently being constructed.
+   * Create a striped block that is currently being constructed.
    */
-  public BlockInfoUnderConstructionContiguous(Block blk, short replication,
+  public BlockInfoUnderConstructionStriped(Block blk, ECSchema schema,
       HdfsServerConstants.BlockUCState state, DatanodeStorageInfo[] targets) {
-    super(blk, replication);
-    Preconditions.checkState(getBlockUCState() !=
-        HdfsServerConstants.BlockUCState.COMPLETE,
-        "BlockInfoUnderConstructionContiguous cannot be in COMPLETE state");
+    super(blk, (short) (schema.getNumDataUnits() + schema.getNumParityUnits()));
+    storageOp = new StripedBlockStorageOp(this, schema);
+    assert getBlockUCState() != COMPLETE :
+        "BlockInfoStripedUnderConstruction cannot be in COMPLETE state";
     this.blockUCState = state;
     setExpectedLocations(targets);
   }
@@ -61,39 +62,39 @@ public class BlockInfoUnderConstructionContiguous extends
    * reported from data-nodes.
    */
   @Override
-  public BlockInfoContiguous convertToCompleteBlock() {
+  public BlockInfoStriped convertToCompleteBlock() {
     Preconditions.checkState(getBlockUCState() !=
-        HdfsServerConstants.BlockUCState.COMPLETE,
+            HdfsServerConstants.BlockUCState.COMPLETE,
         "Trying to convert a COMPLETE block");
-    return new BlockInfoContiguous(this);
+    return new BlockInfoStriped(this);
+  }
+
+  public boolean isStriped() {
+    return true;
+  }
+
+  public StripedBlockStorageOp getStripedBlockStorageOp() {
+    return storageOp;
   }
 
   @Override
   boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock) {
-    return ContiguousBlockStorageOp.addStorage(this, storage);
+    return storageOp.addStorage(storage, reportedBlock);
   }
 
   @Override
   boolean removeStorage(DatanodeStorageInfo storage) {
-    return ContiguousBlockStorageOp.removeStorage(this, storage);
+    return storageOp.removeStorage(storage);
   }
 
   @Override
   public int numNodes() {
-    return ContiguousBlockStorageOp.numNodes(this);
+    return storageOp.numNodes();
   }
 
   @Override
   void replaceBlock(BlockInfo newBlock) {
-    ContiguousBlockStorageOp.replaceBlock(this, newBlock);
-  }
-
-  public boolean isStriped() {
-    return false;
-  }
-
-  public StripedBlockStorageOp getStripedBlockStorageOp() {
-    return null;
+    storageOp.replaceBlock(newBlock);
   }
 
   @Override
@@ -101,18 +102,21 @@ public class BlockInfoUnderConstructionContiguous extends
     int numLocations = targets == null ? 0 : targets.length;
     this.replicas = new ArrayList<>(numLocations);
     for(int i = 0; i < numLocations; i++) {
-      replicas.add(
-          new ReplicaUnderConstruction(this, targets[i], HdfsServerConstants.ReplicaState.RBW));
+      // when creating a new block we simply sequentially assign block index to
+      // each storage
+      Block blk = new Block(this.getBlockId() + i, 0, this.getGenerationStamp());
+      replicas.add(new ReplicaUnderConstruction(blk, targets[i],
+          ReplicaState.RBW));
     }
   }
 
   @Override
   public Block getTruncateBlock() {
-    return truncateBlock;
+    return null;
   }
 
   @Override
   public void setTruncateBlock(Block recoveryBlock) {
-    this.truncateBlock = recoveryBlock;
+    BlockManager.LOG.warn("Truncate not supported on striped blocks.");
   }
 }

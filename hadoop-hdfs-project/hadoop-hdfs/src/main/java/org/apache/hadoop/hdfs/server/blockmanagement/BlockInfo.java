@@ -172,9 +172,14 @@ public abstract class  BlockInfo extends Block
   public abstract int numNodes();
 
   /**
-   * Add a {@link DatanodeStorageInfo} location for a block.
+   * Add a {@link DatanodeStorageInfo} location for a block
+   * @param storage The storage to add
+   * @param reportedBlock The block reported from the datanode. This is only
+   *                      used by erasure coded blocks, this block's id contains
+   *                      information indicating the index of the block in the
+   *                      corresponding block group.
    */
-  abstract boolean addStorage(DatanodeStorageInfo storage);
+  abstract boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock);
 
   /**
    * Remove {@link DatanodeStorageInfo} location for a block
@@ -310,6 +315,10 @@ public abstract class  BlockInfo extends Block
   public boolean isComplete() {
     return getBlockUCState().equals(BlockUCState.COMPLETE);
   }
+
+  public abstract boolean isStriped();
+
+  public abstract StripedBlockStorageOp getStripedBlockStorageOp();
 
   /**
    * Convert a block to an under construction block.

@@ -206,4 +206,23 @@ public class BlockIdManager {
       .LAST_RESERVED_BLOCK_ID);
     generationStampV1Limit = HdfsConstants.GRANDFATHER_GENERATION_STAMP;
   }
+
+  public static boolean isStripedBlockID(long id) {
+    return id < 0;
+  }
+
+  /**
+   * The last 4 bits of HdfsConstants.BLOCK_GROUP_INDEX_MASK(15) is 1111,
+   * so the last 4 bits of (~HdfsConstants.BLOCK_GROUP_INDEX_MASK) is 0000
+   * and the other 60 bits are 1. Group ID is the first 60 bits of any
+   * data/parity block id in the same striped block group.
+   */
+  public static long convertToStripedID(long id) {
+    return id & (~HdfsServerConstants.BLOCK_GROUP_INDEX_MASK);
+  }
+
+  public static int getBlockIndex(Block reportedBlock) {
+    return (int) (reportedBlock.getBlockId() &
+        HdfsServerConstants.BLOCK_GROUP_INDEX_MASK);
+  }
 }

@@ -45,7 +45,7 @@ public class BlockInfoContiguous extends BlockInfo {
   }
 
   @Override
-  boolean addStorage(DatanodeStorageInfo storage) {
+  boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock) {
     return ContiguousBlockStorageOp.addStorage(this, storage);
   }
 
@@ -62,6 +62,14 @@ public class BlockInfoContiguous extends BlockInfo {
   @Override
   void replaceBlock(BlockInfo newBlock) {
     ContiguousBlockStorageOp.replaceBlock(this, newBlock);
+  }
+
+  public boolean isStriped() {
+    return false;
+  }
+
+  public StripedBlockStorageOp getStripedBlockStorageOp() {
+    return null;
   }
 
   @Override
