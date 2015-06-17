@@ -163,6 +163,7 @@ import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.io.retry.LossyRetryInvocationHandler;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RemoteException;
@@ -2988,6 +2989,21 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
       throws IOException {
     checkOpen();
     return new EncryptionZoneIterator(namenode, traceSampler);
+  }
+
+  public void createErasureCodingZone(String src, ECSchema schema, int cellSize)
+      throws IOException {
+    checkOpen();
+    TraceScope scope = getPathTraceScope("createErasureCodingZone", src);
+    try {
+      namenode.createErasureCodingZone(src, schema, cellSize);
+    } catch (RemoteException re) {
+      throw re.unwrapRemoteException(AccessControlException.class,
+          SafeModeException.class,
+          UnresolvedPathException.class);
+    } finally {
+      scope.close();
+    }
   }
 
   public void setXAttr(String src, String name, byte[] value, 

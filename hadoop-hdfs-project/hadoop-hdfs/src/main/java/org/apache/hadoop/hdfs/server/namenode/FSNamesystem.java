@@ -178,6 +178,7 @@ import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.LastBlockWithStatus;
@@ -255,6 +256,7 @@ import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.ipc.RetriableException;
 import org.apache.hadoop.ipc.RetryCache;
 import org.apache.hadoop.ipc.Server;
@@ -418,6 +420,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
   private final BlockManager blockManager;
   private final SnapshotManager snapshotManager;
   private final CacheManager cacheManager;
+  private final ErasureCodingSchemaManager ecSchemaManager;
   private final DatanodeStatistics datanodeStatistics;
 
   private String nameserviceId;
@@ -831,6 +834,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       this.dir = new FSDirectory(this, conf);
       this.snapshotManager = new SnapshotManager(dir);
       this.cacheManager = new CacheManager(this, conf, blockManager);
+      this.ecSchemaManager = new ErasureCodingSchemaManager();
       this.safeMode = new SafeModeInfo(conf);
       this.topConf = new TopConf(conf);
       this.auditLoggers = initAuditLoggers(conf);
@@ -6465,6 +6469,16 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     return cacheManager;
   }
 
+  /** @return the ErasureCodingSchemaManager. */
+  public ErasureCodingSchemaManager getErasureCodingSchemaManager() {
+    return ecSchemaManager;
+  }
+
+  /** @return the ErasureCodingZoneManager. */
+  public ErasureCodingZoneManager getErasureCodingZoneManager() {
+    return dir.ecZoneManager;
+  }
+
   @Override  // NameNodeMXBean
   public String getCorruptFiles() {
     List<String> list = new ArrayList<String>();
@@ -7408,6 +7422,70 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
   }
 
+  /**
+   * Create an erasure coding zone on directory src.
+   * @param srcArg  the path of a directory which will be the root of the
+   *                erasure coding zone. The directory must be empty.
+   * @param schema  ECSchema for the erasure coding zone
+   * @param cellSize Cell size of stripe
+   * @throws AccessControlException  if the caller is not the superuser.
+   * @throws UnresolvedLinkException if the path can't be resolved.
+   * @throws SafeModeException       if the Namenode is in safe mode.
+   */
+  void createErasureCodingZone(final String srcArg, final ECSchema schema,
+      int cellSize, final boolean logRetryCache) throws IOException,
+      UnresolvedLinkException, SafeModeException, AccessControlException {
+    checkSuperuserPrivilege();
+    checkOperation(OperationCategory.WRITE);
+    HdfsFileStatus resultingStat = null;
+    boolean success = false;
+    writeLock();
+    try {
+      checkOperation(OperationCategory.WRITE);
+      checkNameNodeSafeMode("Cannot create erasure coding zone on " + srcArg);
+      resultingStat = FSDirErasureCodingOp.createErasureCodingZone(this,
+          srcArg, schema, cellSize, logRetryCache);
+      success = true;
+    } finally {
+      writeUnlock();
+      if (success) {
+        getEditLog().logSync();
+      }
+      logAuditEvent(success, "createErasureCodingZone", srcArg, null,
+          resultingStat);
+    }
+  }
+
+  /**
+   * Get the erasure coding zone information for specified path
+   */
+  ErasureCodingZone getErasureCodingZone(String src)
+      throws AccessControlException, UnresolvedLinkException, IOException {
+    checkOperation(OperationCategory.READ);
+    readLock();
+    try {
+      checkOperation(OperationCategory.READ);
+      return getErasureCodingZoneForPath(src);
+    } finally {
+      readUnlock();
+    }
+  }
+
+  /**
+   * Get available erasure coding schemas
+   */
+  ECSchema[] getErasureCodingSchemas() throws IOException {
+    checkOperation(OperationCategory.READ);
+    waitForLoadingFSImage();
+    readLock();
+    try {
+      checkOperation(OperationCategory.READ);
+      return FSDirErasureCodingOp.getErasureCodingSchemas(this);
+    } finally {
+      readUnlock();
+    }
+  }
+
   void setXAttr(String src, XAttr xAttr, EnumSet<XAttrSetFlag> flag,
                 boolean logRetryCache)
       throws IOException {
@@ -7590,5 +7668,10 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
     }
   }
 
+  @Override
+  public ErasureCodingZone getErasureCodingZoneForPath(String src)
+      throws IOException {
+    return FSDirErasureCodingOp.getErasureCodingZone(this, src);
+  }
 }
 

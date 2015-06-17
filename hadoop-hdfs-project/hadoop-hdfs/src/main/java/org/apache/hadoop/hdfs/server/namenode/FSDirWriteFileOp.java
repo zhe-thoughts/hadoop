@@ -556,7 +556,7 @@ class FSDirWriteFileOp {
 
     long modTime = now();
     INodeFile newNode = newINodeFile(fsd.allocateNewInodeId(), permissions,
-                                     modTime, modTime, replication, preferredBlockSize);
+        modTime, modTime, replication, preferredBlockSize);
     newNode.setLocalName(localName.getBytes(Charsets.UTF_8));
     newNode.toUnderConstruction(clientName, clientMachine);
 
@@ -564,12 +564,17 @@ class FSDirWriteFileOp {
     fsd.writeLock();
     try {
       newiip = fsd.addINode(existing, newNode);
+      if (newiip != null
+          && FSDirErasureCodingOp.isInErasureCodingZone(fsd.getFSNamesystem(),
+          newiip)) {
+        newNode.addStripedBlocksFeature();
+      }
     } finally {
       fsd.writeUnlock();
     }
     if (newiip == null) {
       NameNode.stateChangeLog.info("DIR* addFile: failed to add " +
-                                       existing.getPath() + "/" + localName);
+          existing.getPath() + "/" + localName);
       return null;
     }
 
