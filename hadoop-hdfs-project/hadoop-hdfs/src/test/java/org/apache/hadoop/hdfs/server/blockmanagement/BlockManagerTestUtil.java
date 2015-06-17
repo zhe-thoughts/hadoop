@@ -86,7 +86,7 @@ public class BlockManagerTestUtil {
   private static int getNumberOfRacks(final BlockManager blockManager,
       final Block b) {
     final Set<String> rackSet = new HashSet<String>(0);
-    final Collection<DatanodeDescriptor> corruptNodes = 
+    final Collection<DatanodeDescriptor> corruptNodes =
        getCorruptReplicas(blockManager).getNodes(b);
     for(DatanodeStorageInfo storage : blockManager.blocksMap.getStorages(b)) {
       final DatanodeDescriptor cur = storage.getDatanodeDescriptor();
@@ -109,11 +109,11 @@ public class BlockManagerTestUtil {
   {
     return blockManager.replicationThread;
   }
-  
+
   /**
    * Stop the replication monitor thread
    */
-  public static void stopReplicationThread(final BlockManager blockManager) 
+  public static void stopReplicationThread(final BlockManager blockManager)
       throws IOException {
     blockManager.enableRMTerminationForTesting();
     blockManager.replicationThread.interrupt();
@@ -130,7 +130,7 @@ public class BlockManagerTestUtil {
    */
   public static  CorruptReplicasMap getCorruptReplicas(final BlockManager blockManager){
     return blockManager.corruptReplicas;
-    
+
   }
 
   /**
@@ -142,26 +142,26 @@ public class BlockManagerTestUtil {
   {
     return blockManager.computeDatanodeWork();
   }
-  
+
   public static int computeInvalidationWork(BlockManager bm) {
     return bm.computeInvalidateWork(Integer.MAX_VALUE);
   }
-  
+
   /**
    * Compute all the replication and invalidation work for the
    * given BlockManager.
-   * 
+   *
    * This differs from the above functions in that it computes
    * replication work for all DNs rather than a particular subset,
    * regardless of invalidation/replication limit configurations.
-   * 
+   *
    * NB: you may want to set
    * {@link DFSConfigKeys#DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY} to
    * a high value to ensure that all work is calculated.
    */
   public static int computeAllPendingWork(BlockManager bm) {
     int work = computeInvalidationWork(bm);
-    work += bm.computeReplicationWork(Integer.MAX_VALUE);
+    work += bm.computeBlockRecoveryWork(Integer.MAX_VALUE);
     return work;
   }
 
@@ -185,7 +185,7 @@ public class BlockManagerTestUtil {
         }
       }
       Assert.assertNotNull("Could not find DN with name: " + dnName, theDND);
-      
+
       synchronized (hbm) {
         DFSTestUtil.setDatanodeDead(theDND);
         hbm.heartbeatCheck();
@@ -194,7 +194,7 @@ public class BlockManagerTestUtil {
       namesystem.writeUnlock();
     }
   }
-  
+
   /**
    * Change whether the block placement policy will prefer the writer's
    * local Datanode or not.
@@ -207,7 +207,7 @@ public class BlockManagerTestUtil {
         "Must use default policy, got %s", bpp.getClass());
     ((BlockPlacementPolicyDefault)bpp).setPreferLocalNode(prefer);
   }
-  
+
   /**
    * Call heartbeat check function of HeartbeatManager
    * @param bm the BlockManager to manipulate
@@ -256,7 +256,7 @@ public class BlockManagerTestUtil {
     }
     return dn;
   }
-  
+
   public static DatanodeDescriptor getDatanodeDescriptor(String ipAddr,
       String rackLocation, boolean initializeStorage) {
     return getDatanodeDescriptor(ipAddr, rackLocation,

@@ -31,7 +31,6 @@ import java.util.Queue;
 import java.util.Set;
 
 import com.google.common.annotations.VisibleForTesting;
-
 import com.google.common.collect.ImmutableList;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -41,13 +40,16 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
+import org.apache.hadoop.hdfs.server.protocol.BlockECRecoveryCommand.BlockECRecoveryInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.util.IntrusiveCollection;
 import org.apache.hadoop.util.Time;
 
@@ -89,7 +91,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   @InterfaceStability.Evolving
   public static class BlockTargetPair {
     public final Block block;
-    public final DatanodeStorageInfo[] targets;    
+    public final DatanodeStorageInfo[] targets;
 
     BlockTargetPair(Block block, DatanodeStorageInfo[] targets) {
       this.block = block;
@@ -105,7 +107,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
     synchronized int size() {return blockq.size();}
 
     /** Enqueue */
-    synchronized boolean offer(E e) { 
+    synchronized boolean offer(E e) {
       return blockq.offer(e);
     }
 
@@ -134,7 +136,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
     }
   }
 
-  private final Map<String, DatanodeStorageInfo> storageMap = 
+  private final Map<String, DatanodeStorageInfo> storageMap =
       new HashMap<String, DatanodeStorageInfo>();
 
   /**
@@ -168,20 +170,20 @@ public class DatanodeDescriptor extends DatanodeInfo {
   /**
    * The blocks which we want to cache on this DataNode.
    */
-  private final CachedBlocksList pendingCached = 
+  private final CachedBlocksList pendingCached =
       new CachedBlocksList(this, CachedBlocksList.Type.PENDING_CACHED);
 
   /**
    * The blocks which we know are cached on this datanode.
    * This list is updated by periodic cache reports.
    */
-  private final CachedBlocksList cached = 
+  private final CachedBlocksList cached =
       new CachedBlocksList(this, CachedBlocksList.Type.CACHED);
 
   /**
    * The blocks which we want to uncache on this DataNode.
    */
-  private final CachedBlocksList pendingUncached = 
+  private final CachedBlocksList pendingUncached =
       new CachedBlocksList(this, CachedBlocksList.Type.PENDING_UNCACHED);
 
   public CachedBlocksList getPendingCached() {
@@ -207,7 +209,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   public boolean isAlive = false;
   public boolean needKeyUpdate = false;
 
-  
+
   // A system administrator can tune the balancer bandwidth parameter
   // (dfs.balance.bandwidthPerSec) dynamically by calling
   // "dfsadmin -setBalanacerBandwidth <newbandwidth>", at which point the
@@ -217,12 +219,17 @@ public class DatanodeDescriptor extends DatanodeInfo {
   private long bandwidth;
 
   /** A queue of blocks to be replicated by this datanode */
-  private final BlockQueue<BlockTargetPair> replicateBlocks = new BlockQueue<BlockTargetPair>();
+  private final BlockQueue<BlockTargetPair> replicateBlocks =
+      new BlockQueue<>();
+  /** A queue of blocks to be erasure coded by this datanode */
+  private final BlockQueue<BlockECRecoveryInfo> erasurecodeBlocks =
+      new BlockQueue<>();
   /** A queue of blocks to be recovered by this datanode */
   private final BlockQueue<BlockInfoUnderConstruction> recoverBlocks =
-                                new BlockQueue<BlockInfoUnderConstruction>();
+      new BlockQueue<>();
   /** A set of blocks to be invalidated by this datanode */
-  private final LightWeightHashSet<Block> invalidateBlocks = new LightWeightHashSet<Block>();
+  private final LightWeightHashSet<Block> invalidateBlocks =
+      new LightWeightHashSet<>();
 
   /* Variables for maintaining number of blocks scheduled to be written to
    * this storage. This count is approximate and might be slightly bigger
@@ -237,8 +244,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
   private static final int BLOCKS_SCHEDULED_ROLL_INTERVAL = 600*1000; //10min
   private int volumeFailures = 0;
   private VolumeFailureSummary volumeFailureSummary = null;
-  
-  /** 
+
+  /**
    * When set to true, the node is not in include list and is not allowed
    * to communicate with the namenode
    */
@@ -264,8 +271,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
    * @param nodeID id of the data node
    * @param networkLocation location of the data node in network
    */
-  public DatanodeDescriptor(DatanodeID nodeID, 
-                            String networkLocation) {
+  public DatanodeDescriptor(DatanodeID nodeID,
+      String networkLocation) {
     super(nodeID, networkLocation);
     updateHeartbeatState(StorageReport.EMPTY_ARRAY, 0L, 0L, 0, 0, null);
   }
@@ -345,17 +352,14 @@ public class DatanodeDescriptor extends DatanodeInfo {
     }
     return false;
   }
-  
+
   /**
    * Remove block from the list of blocks belonging to the data-node. Remove
    * data-node from the block.
    */
   boolean removeBlock(String storageID, BlockInfo b) {
     DatanodeStorageInfo s = getStorageInfo(storageID);
-    if (s != null) {
-      return s.removeBlock(b);
-    }
-    return false;
+    return s != null && s.removeBlock(b);
   }
 
   public void resetBlocks() {
@@ -372,12 +376,13 @@ public class DatanodeDescriptor extends DatanodeInfo {
     this.cached.clear();
     this.pendingUncached.clear();
   }
-  
+
   public void clearBlockQueues() {
     synchronized (invalidateBlocks) {
       this.invalidateBlocks.clear();
       this.recoverBlocks.clear();
       this.replicateBlocks.clear();
+      this.erasurecodeBlocks.clear();
     }
     // pendingCached, cached, and pendingUncached are protected by the
     // FSN lock.
@@ -542,9 +547,9 @@ public class DatanodeDescriptor extends DatanodeInfo {
   private static class BlockIterator implements Iterator<BlockInfo> {
     private int index = 0;
     private final List<Iterator<BlockInfo>> iterators;
-    
+
     private BlockIterator(final DatanodeStorageInfo... storages) {
-      List<Iterator<BlockInfo>> iterators = new ArrayList<Iterator<BlockInfo>>();
+      List<Iterator<BlockInfo>> iterators = new ArrayList<>();
       for (DatanodeStorageInfo e : storages) {
         iterators.add(e.getBlockIterator());
       }
@@ -562,12 +567,12 @@ public class DatanodeDescriptor extends DatanodeInfo {
       update();
       return iterators.get(index).next();
     }
-    
+
     @Override
     public void remove() {
       throw new UnsupportedOperationException("Remove unsupported.");
     }
-    
+
     private void update() {
       while(index < iterators.size() - 1 && !iterators.get(index).hasNext()) {
         index++;
@@ -578,6 +583,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   Iterator<BlockInfo> getBlockIterator() {
     return new BlockIterator(getStorageInfos());
   }
+
   Iterator<BlockInfo> getBlockIterator(final String storageID) {
     return new BlockIterator(getStorageInfo(storageID));
   }
@@ -596,6 +602,20 @@ public class DatanodeDescriptor extends DatanodeInfo {
   void addBlockToBeReplicated(Block block, DatanodeStorageInfo[] targets) {
     assert(block != null && targets != null && targets.length > 0);
     replicateBlocks.offer(new BlockTargetPair(block, targets));
+  }
+
+  /**
+   * Store block erasure coding work.
+   */
+  void addBlockToBeErasureCoded(ExtendedBlock block,
+      DatanodeDescriptor[] sources, DatanodeStorageInfo[] targets,
+      short[] liveBlockIndices, ECSchema ecSchema, int cellSize) {
+    assert (block != null && sources != null && sources.length > 0);
+    BlockECRecoveryInfo task = new BlockECRecoveryInfo(block, sources, targets,
+        liveBlockIndices, ecSchema, cellSize);
+    erasurecodeBlocks.offer(task);
+    BlockManager.LOG.debug("Adding block recovery task " + task + "to "
+        + getName() + ", current queue size is " + erasurecodeBlocks.size());
   }
 
   /**
@@ -630,6 +650,14 @@ public class DatanodeDescriptor extends DatanodeInfo {
   }
 
   /**
+   * The number of work items that are pending to be replicated
+   */
+  @VisibleForTesting
+  public int getNumberOfBlocksToBeErasureCoded() {
+    return erasurecodeBlocks.size();
+  }
+
+  /**
    * The number of block invalidation items that are pending to 
    * be sent to the datanode
    */
@@ -643,8 +671,11 @@ public class DatanodeDescriptor extends DatanodeInfo {
     return replicateBlocks.poll(maxTransfers);
   }
 
-  public BlockInfoUnderConstruction[] getLeaseRecoveryCommand(
-      int maxTransfers) {
+  public List<BlockECRecoveryInfo> getErasureCodeCommand(int maxTransfers) {
+    return erasurecodeBlocks.poll(maxTransfers);
+  }
+
+  public BlockInfoUnderConstruction[] getLeaseRecoveryCommand(int maxTransfers) {
     List<BlockInfoUnderConstruction> blocks = recoverBlocks.poll(maxTransfers);
     if(blocks == null)
       return null;
@@ -672,7 +703,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
         remaining += s.getRemaining();
       }
     }
-    return remaining;    
+    return remaining;
   }
 
   /**
@@ -697,17 +728,17 @@ public class DatanodeDescriptor extends DatanodeInfo {
   void incrementBlocksScheduled(StorageType t) {
     currApproxBlocksScheduled.add(t, 1);;
   }
-  
+
   /** Decrement the number of blocks scheduled. */
   void decrementBlocksScheduled(StorageType t) {
     if (prevApproxBlocksScheduled.get(t) > 0) {
       prevApproxBlocksScheduled.subtract(t, 1);
     } else if (currApproxBlocksScheduled.get(t) > 0) {
       currApproxBlocksScheduled.subtract(t, 1);
-    } 
+    }
     // its ok if both counters are zero.
   }
-  
+
   /** Adjusts curr and prev number of blocks scheduled every few minutes. */
   private void rollBlocksScheduled(long now) {
     if (now - lastBlocksScheduledRollTime > BLOCKS_SCHEDULED_ROLL_INTERVAL) {
@@ -716,13 +747,13 @@ public class DatanodeDescriptor extends DatanodeInfo {
       lastBlocksScheduledRollTime = now;
     }
   }
-  
+
   @Override
   public int hashCode() {
     // Super implementation is sufficient
     return super.hashCode();
   }
-  
+
   @Override
   public boolean equals(Object obj) {
     // Sufficient to use super equality as datanodes are uniquely identified
@@ -736,7 +767,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
     private int decommissionOnlyReplicas;
     private int underReplicatedInOpenFiles;
     private long startTime;
-    
+
     synchronized void set(int underRep,
         int onlyRep, int underConstruction) {
       if (isDecommissionInProgress() == false) {
@@ -815,7 +846,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   @Override
   public void updateRegInfo(DatanodeID nodeReg) {
     super.updateRegInfo(nodeReg);
-    
+
     // must re-process IBR after re-registration
     for(DatanodeStorageInfo storage : getStorageInfos()) {
       storage.setBlockReportCount(0);
@@ -844,9 +875,13 @@ public class DatanodeDescriptor extends DatanodeInfo {
     if (repl > 0) {
       sb.append(" ").append(repl).append(" blocks to be replicated;");
     }
+    int ec = erasurecodeBlocks.size();
+    if(ec > 0) {
+      sb.append(" ").append(ec).append(" blocks to be erasure coded;");
+    }
     int inval = invalidateBlocks.size();
     if (inval > 0) {
-      sb.append(" ").append(inval).append(" blocks to be invalidated;");      
+      sb.append(" ").append(inval).append(" blocks to be invalidated;");
     }
     int recover = recoverBlocks.size();
     if (recover > 0) {
@@ -860,11 +895,11 @@ public class DatanodeDescriptor extends DatanodeInfo {
       DatanodeStorageInfo storage = storageMap.get(s.getStorageID());
       if (storage == null) {
         LOG.info("Adding new storage ID " + s.getStorageID() +
-                 " for DN " + getXferAddr());
+            " for DN " + getXferAddr());
         storage = new DatanodeStorageInfo(this, s);
         storageMap.put(s.getStorageID(), storage);
       } else if (storage.getState() != s.getState() ||
-                 storage.getStorageType() != s.getStorageType()) {
+          storage.getStorageType() != s.getStorageType()) {
         // For backwards compatibility, make sure that the type and
         // state are updated. Some reports from older datanodes do
         // not include these fields so we may have assumed defaults.
@@ -890,7 +925,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   public void setLastCachingDirectiveSentTimeMs(long time) {
     this.lastCachingDirectiveSentTimeMs = time;
   }
-  
+
   /**
    * checks whether atleast first block report has been received
    * @return
@@ -904,6 +939,6 @@ public class DatanodeDescriptor extends DatanodeInfo {
         return false;
     }
     return true;
- }
+  }
 }
 
