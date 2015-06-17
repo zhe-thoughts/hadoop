@@ -44,7 +44,7 @@ public interface BlockCollection {
   public int numBlocks();
 
   /**
-   * Get the blocks.
+   * Get the blocks (striped or contiguous).
    */
   public BlockInfo[] getBlocks();
 
@@ -71,7 +71,7 @@ public interface BlockCollection {
   public String getName();
 
   /**
-   * Set the block at the given index.
+   * Set the block (contiguous or striped) at the given index.
    */
   public void setBlock(int index, BlockInfo blk);
 

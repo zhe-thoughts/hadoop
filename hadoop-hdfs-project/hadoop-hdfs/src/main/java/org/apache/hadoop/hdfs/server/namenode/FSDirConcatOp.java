@@ -216,6 +216,11 @@ class FSDirConcatOp {
     }
 
     final INodeFile trgInode = targetIIP.getLastINode().asFile();
+    // TODO: support concat on striped files.
+    if (trgInode.isStriped()) {
+      throw new UnsupportedActionException(
+          "Concat is not supported on striped files yet.");
+    }
     QuotaCounts deltas = computeQuotaDeltas(fsd, trgInode, srcList);
     verifyQuota(fsd, targetIIP, deltas);
 
@@ -228,7 +233,12 @@ class FSDirConcatOp {
     int count = 0;
     for (INodeFile nodeToRemove : srcList) {
       if(nodeToRemove != null) {
-        nodeToRemove.setBlocks(null);
+        // TODO: support concat on striped files.
+        if (nodeToRemove.isStriped()) {
+          throw new UnsupportedActionException(
+              "Concat is not supported on striped files yet.");
+        }
+        nodeToRemove.setContiguousBlocks(null);
         nodeToRemove.getParent().removeChild(nodeToRemove);
         fsd.getINodeMap().remove(nodeToRemove);
         count++;
