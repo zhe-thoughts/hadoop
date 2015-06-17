@@ -119,4 +119,14 @@ public class BlockInfoUnderConstructionStriped extends
   public void setTruncateBlock(Block recoveryBlock) {
     BlockManager.LOG.warn("Truncate not supported on striped blocks.");
   }
+
+  /** @return the index array indicating the block index in each storage */
+  public int[] getBlockIndices() {
+    int numLocations = getNumExpectedLocations();
+    int[] indices = new int[numLocations];
+    for (int i = 0; i < numLocations; i++) {
+      indices[i] = BlockIdManager.getBlockIndex(replicas.get(i));
+    }
+    return indices;
+  }
 }
