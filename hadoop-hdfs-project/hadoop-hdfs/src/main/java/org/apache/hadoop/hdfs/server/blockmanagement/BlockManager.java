@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import static org.apache.hadoop.hdfs.protocol.HdfsConstants.BLOCK_STRIPED_CELL_SIZE;
 import static org.apache.hadoop.util.ExitUtil.terminate;
 
 import java.io.IOException;
@@ -269,6 +270,9 @@ public class BlockManager {
 
   /** Check whether name system is running before terminating */
   private boolean checkNSRunning = true;
+
+  /** Check whether there are any non-EC blocks using StripedID */
+  private boolean hasNonEcBlockUsingStripedID = false;
 
   public BlockManager(final Namesystem namesystem, final Configuration conf)
     throws IOException {
@@ -586,11 +590,26 @@ public class BlockManager {
     return maxReplicationStreams;
   }
 
-  /**
-   * @return true if the block has minimum replicas
-   */
-  public boolean checkMinReplication(BlockInfo block) {
-    return (countNodes(block).liveReplicas() >= minReplication);
+  public int getDefaultStorageNum(BlockInfo block) {
+    return block.isStriped() ?
+        block.getStripedBlockStorageOp().getTotalBlockNum() :
+        defaultReplication;
+  }
+
+  public short getMinStorageNum(BlockInfo block) {
+    if (block.isStriped()) {
+      return getStripedDataBlockNum(block);
+    } else {
+      return minReplication;
+    }
+  }
+
+  public boolean hasMinStorage(BlockInfo block) {
+    return countNodes(block).liveReplicas() >= getMinStorageNum(block);
+  }
+
+  public boolean hasMinStorage(BlockInfo block, int liveNum) {
+    return liveNum >= getMinStorageNum(block);
   }
 
   /**
@@ -755,7 +774,7 @@ public class BlockManager {
     // count in safe-mode.
     namesystem.adjustSafeModeBlockTotals(
         // decrement safe if we had enough
-        targets.length >= minReplication ? -1 : 0,
+        hasMinStorage(oldBlock, targets.length) ? -1 : 0,
         // always decrement total blocks
         -1);
 
@@ -1215,8 +1234,8 @@ public class BlockManager {
     NumberReplicas numberOfReplicas = countNodes(b.stored);
     boolean hasEnoughLiveReplicas = numberOfReplicas.liveReplicas() >=
         expectedReplicas;
-    boolean minReplicationSatisfied =
-        numberOfReplicas.liveReplicas() >= minReplication;
+    boolean minReplicationSatisfied = hasMinStorage(b.stored,
+        numberOfReplicas.liveReplicas());
     boolean hasMoreCorruptReplicas = minReplicationSatisfied &&
         (numberOfReplicas.liveReplicas() + numberOfReplicas.corruptReplicas()) >
         expectedReplicas;
@@ -2560,7 +2579,7 @@ public class BlockManager {
     // Now check for completion of blocks and safe block count
     int numCurrentReplica = countLiveNodes(storedBlock);
     if (storedBlock.getBlockUCState() == BlockUCState.COMMITTED
-        && numCurrentReplica >= minReplication) {
+        && hasMinStorage(storedBlock, numCurrentReplica)) {
       completeBlock(storedBlock.getBlockCollection(), storedBlock, false);
     } else if (storedBlock.isComplete() && result == AddBlockResult.ADDED) {
       // check whether safe replication is reached for the block
@@ -2634,7 +2653,7 @@ public class BlockManager {
       + pendingReplications.getNumReplicas(storedBlock);
 
     if(storedBlock.getBlockUCState() == BlockUCState.COMMITTED &&
-        numLiveReplicas >= minReplication) {
+        hasMinStorage(storedBlock, numLiveReplicas)) {
       storedBlock = completeBlock(bc, storedBlock, false);
     } else if (storedBlock.isComplete() && result == AddBlockResult.ADDED) {
       // check whether safe replication is reached for the block
@@ -3319,6 +3338,8 @@ public class BlockManager {
   /**
    * Return the number of nodes hosting a given block, grouped
    * by the state of those replicas.
+   * For a striped block, this includes nodes storing blocks belonging to the
+   * striped block group.
    */
   public NumberReplicas countNodes(BlockInfo b) {
     int decommissioned = 0;
@@ -3636,7 +3657,20 @@ public class BlockManager {
   boolean isNeededReplication(Block b, int expected, int current) {
     return current < expected || !blockHasEnoughRacks(b);
   }
-  
+
+  short getStripedDataBlockNum(BlockInfo block) {
+    assert block.isStriped();
+    short dataBlockNum = block.getStripedBlockStorageOp().getDataBlockNum();
+    if (block.isComplete() ||
+        block.getBlockUCState() == BlockUCState.COMMITTED) {
+      // if the sblock is committed/completed and its length is less than a
+      // full stripe, the minimum storage number needs to be adjusted
+      dataBlockNum = (short) Math.min(dataBlockNum,
+          (block.getNumBytes() - 1) / BLOCK_STRIPED_CELL_SIZE + 1);
+    }
+    return dataBlockNum;
+  }
+
   public long getMissingBlocksCount() {
     // not locking
     return this.neededReplications.getCorruptBlockSize();
@@ -3650,6 +3684,20 @@ public class BlockManager {
   public BlockInfo addBlockCollection(BlockInfo block,
       BlockCollection bc) {
     return blocksMap.addBlockCollection(block, bc);
+  }
+
+  /**
+   * Do some check when adding a block to blocksmap.
+   * For HDFS-7994 to check whether then block is a NonEcBlockUsingStripedID.
+   *
+   */
+  public BlockInfo addBlockCollectionWithCheck(
+      BlockInfo block, BlockCollection bc) {
+    if (!hasNonEcBlockUsingStripedID && !block.isStriped() &&
+        BlockIdManager.isStripedBlockID(block.getBlockId())) {
+      hasNonEcBlockUsingStripedID = true;
+    }
+    return addBlockCollection(block, bc);
   }
 
   public BlockCollection getBlockCollection(Block b) {

@@ -30,6 +30,14 @@ public class StripedBlockStorageOp {
         + schema.getNumParityUnits());
   }
 
+  public short getDataBlockNum() {
+    return (short) this.schema.getNumDataUnits();
+  }
+
+  public short getParityBlockNum() {
+    return (short) this.schema.getNumParityUnits();
+  }
+
   private void initIndices() {
     for (int i = 0; i < indices.length; i++) {
       indices[i] = -1;

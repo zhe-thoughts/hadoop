@@ -474,21 +474,22 @@ class FSDirWriteFileOp {
     assert fsd.hasWriteLock();
     if (underConstruction) {
       newNode = newINodeFile(id, permissions, modificationTime,
-                                              modificationTime, replication,
-                                              preferredBlockSize,
-                                              storagePolicyId);
+          modificationTime, replication, preferredBlockSize, storagePolicyId);
       newNode.toUnderConstruction(clientName, clientMachine);
     } else {
-      newNode = newINodeFile(id, permissions, modificationTime,
-                                              atime, replication,
-                                              preferredBlockSize,
-                                              storagePolicyId);
+      newNode = newINodeFile(id, permissions, modificationTime, atime,
+          replication, preferredBlockSize, storagePolicyId);
     }
 
     newNode.setLocalName(localName);
     try {
       INodesInPath iip = fsd.addINode(existing, newNode);
       if (iip != null) {
+        // check if the file is in an EC zone
+        if (FSDirErasureCodingOp.isInErasureCodingZone(fsd.getFSNamesystem(),
+            iip)) {
+          newNode.addStripedBlocksFeature();
+        }
         if (aclEntries != null) {
           AclStorage.updateINodeAcl(newNode, aclEntries, CURRENT_STATE_ID);
         }
