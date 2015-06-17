@@ -664,6 +664,10 @@ public class INodeFile extends INodeWithAdditionalFields
 
     final long ssDeltaNoReplication;
     short replication;
+    if (isStriped()) {
+      return computeQuotaUsageWithStriped(bsp, counts);
+    }
+
     if (last < lastSnapshotId) {
       ssDeltaNoReplication = computeFileSize(true, false);
       replication = getFileReplication();
@@ -683,6 +687,18 @@ public class INodeFile extends INodeWithAdditionalFields
         counts.addTypeSpace(t, ssDeltaNoReplication);
       }
     }
+    return counts;
+  }
+
+  /**
+   * Compute quota of striped file. Note that currently EC files do not support
+   * append/hflush/hsync, thus the file length recorded in snapshots should be
+   * the same with the current file length.
+   */
+  public final QuotaCounts computeQuotaUsageWithStriped(
+      BlockStoragePolicy bsp, QuotaCounts counts) {
+    counts.addNameSpace(1);
+    counts.add(storagespaceConsumed(bsp));
     return counts;
   }
 
@@ -765,22 +781,28 @@ public class INodeFile extends INodeWithAdditionalFields
    */
   public final long computeFileSize(boolean includesLastUcBlock,
       boolean usePreferredBlockSize4LastUcBlock) {
-    if (blocks == null || blocks.length == 0) {
+    BlockInfo[] blockInfos = getBlocks();
+    // In case of contiguous blocks
+    if (blockInfos == null || blockInfos.length == 0) {
       return 0;
     }
-    final int last = blocks.length - 1;
+    final int last = blockInfos.length - 1;
     //check if the last block is BlockInfoUnderConstruction
-    long size = blocks[last].getNumBytes();
-    if (blocks[last] instanceof BlockInfoUnderConstruction) {
+    BlockInfo lastBlk = blockInfos[last];
+    long size = lastBlk.getNumBytes();
+    if (lastBlk instanceof BlockInfoUnderConstruction) {
        if (!includesLastUcBlock) {
          size = 0;
        } else if (usePreferredBlockSize4LastUcBlock) {
-         size = getPreferredBlockSize();
+         size = isStriped()?
+             getPreferredBlockSize() *
+                 lastBlk.getStripedBlockStorageOp().getTotalBlockNum() :
+             getPreferredBlockSize();
        }
     }
     //sum other blocks
-    for(int i = 0; i < last; i++) {
-      size += blocks[i].getNumBytes();
+    for (int i = 0; i < last; i++) {
+      size += blockInfos[i].getNumBytes();
     }
     return size;
   }

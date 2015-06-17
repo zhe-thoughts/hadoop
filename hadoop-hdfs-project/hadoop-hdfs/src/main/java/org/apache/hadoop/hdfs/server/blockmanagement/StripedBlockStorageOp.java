@@ -25,7 +25,7 @@ public class StripedBlockStorageOp {
     this(op.b, op.schema);
   }
 
-  private short getTotalBlockNum() {
+  public short getTotalBlockNum() {
     return (short) (schema.getNumDataUnits()
         + schema.getNumParityUnits());
   }
