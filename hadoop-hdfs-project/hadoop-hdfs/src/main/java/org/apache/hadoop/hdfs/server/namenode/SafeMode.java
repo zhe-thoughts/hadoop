@@ -41,10 +41,10 @@ public interface SafeMode {
 
   /** Check whether replication queues are being populated. */
   public boolean isPopulatingReplQueues();
-    
+
   /**
    * Increment number of blocks that reached minimal replication.
-   * @param replication current replication 
+   * @param replication current replication
    */
   public void incrementSafeBlockCount(int replication);
 

@@ -112,6 +112,21 @@ public class StripedBlockStorageOp {
     return i == -1 ? -1 : indices[i];
   }
 
+  /**
+   * Identify the block stored in the given datanode storage. Note that
+   * the returned block has the same block Id with the one seen/reported by the
+   * DataNode.
+   */
+  Block getBlockOnStorage(DatanodeStorageInfo storage) {
+    int index = getStorageBlockIndex(storage);
+    if (index < 0) {
+      return null;
+    } else {
+      Block block = new Block(b);
+      block.setBlockId(b.getBlockId() + index);
+      return block;
+    }
+  }
 
   boolean removeStorage(DatanodeStorageInfo storage) {
     int dnIndex = findStorageInfoFromEnd(storage);
