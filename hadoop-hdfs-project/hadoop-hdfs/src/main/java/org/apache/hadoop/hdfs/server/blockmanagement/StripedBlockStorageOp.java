@@ -2,10 +2,15 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import com.google.common.base.Preconditions;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.io.erasurecode.ECSchema;
+
+import static org.apache.hadoop.hdfs.protocol.HdfsConstants.BLOCK_STRIPED_CELL_SIZE;
 
 public class StripedBlockStorageOp {
   private final ECSchema schema;
+  private final int cellSize;
+
   /**
    * Always the same size with triplets. Record the block index for each triplet
    * TODO: actually this is only necessary for over-replicated block. Thus can
@@ -14,15 +19,16 @@ public class StripedBlockStorageOp {
   private byte[] indices;
   private final BlockInfo b;
 
-  public StripedBlockStorageOp(BlockInfo b, ECSchema schema) {
+  public StripedBlockStorageOp(BlockInfo b, ECSchema schema, int cellSize) {
     this.b = b;
     indices = new byte[schema.getNumDataUnits() + schema.getNumParityUnits()];
     initIndices();
     this.schema = schema;
+    this.cellSize = cellSize;
   }
 
   public StripedBlockStorageOp(StripedBlockStorageOp op) {
-    this(op.b, op.schema);
+    this(op.b, op.schema, op.cellSize);
   }
 
   public short getTotalBlockNum() {
@@ -36,6 +42,19 @@ public class StripedBlockStorageOp {
 
   public short getParityBlockNum() {
     return (short) this.schema.getNumParityUnits();
+  }
+
+  public long spaceConsumed() {
+    // In case striped blocks, total usage by this striped blocks should
+    // be the total of data blocks and parity blocks because
+    // `getNumBytes` is the total of actual data block size.
+    return StripedBlockUtil.spaceConsumedByStripedBlock(b.getNumBytes(),
+        this.schema.getNumDataUnits(), this.schema.getNumParityUnits(),
+        BLOCK_STRIPED_CELL_SIZE);
+  }
+
+  public int getCellSize() {
+    return cellSize;
   }
 
   private void initIndices() {

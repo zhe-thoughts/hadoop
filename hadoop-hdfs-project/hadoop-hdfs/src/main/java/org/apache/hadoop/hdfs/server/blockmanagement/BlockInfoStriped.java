@@ -13,9 +13,9 @@ import org.apache.hadoop.io.erasurecode.ECSchema;
 public class BlockInfoStriped extends BlockInfo {
   private final StripedBlockStorageOp storageOp;
 
-  public BlockInfoStriped(Block blk, ECSchema schema) {
+  public BlockInfoStriped(Block blk, ECSchema schema, int cellSize) {
     super(blk, (short) (schema.getNumDataUnits() + schema.getNumParityUnits()));
-    storageOp = new StripedBlockStorageOp(this, schema);
+    storageOp = new StripedBlockStorageOp(this, schema, cellSize);
   }
 
   BlockInfoStriped(BlockInfo b) {

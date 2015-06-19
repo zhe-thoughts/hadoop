@@ -168,14 +168,15 @@ class FSDirWriteFileOp {
       String src, long fileId, String clientName,
       ExtendedBlock previous, LocatedBlock[] onRetryBlock) throws IOException {
     final long blockSize;
-    final int replication;
+    final short numTargets;
     final byte storagePolicyID;
     String clientMachine;
+    final boolean isStriped;
 
     byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
     src = fsn.dir.resolvePath(pc, src, pathComponents);
     FileState fileState = analyzeFileState(fsn, src, fileId, clientName,
-                                           previous, onRetryBlock);
+        previous, onRetryBlock);
     final INodeFile pendingFile = fileState.inode;
     // Check if the penultimate block is minimally replicated
     if (!fsn.checkFileProgress(src, pendingFile, false)) {
@@ -196,10 +197,13 @@ class FSDirWriteFileOp {
     blockSize = pendingFile.getPreferredBlockSize();
     clientMachine = pendingFile.getFileUnderConstructionFeature()
         .getClientMachine();
-    replication = pendingFile.getFileReplication();
+    isStriped = pendingFile.isStriped();
+    numTargets = isStriped ?
+        HdfsConstants.NUM_DATA_BLOCKS + HdfsConstants.NUM_PARITY_BLOCKS :
+        pendingFile.getFileReplication();
     storagePolicyID = pendingFile.getStoragePolicyID();
-    return new ValidateAddBlockResult(blockSize, replication, storagePolicyID,
-                                    clientMachine);
+    return new ValidateAddBlockResult(blockSize, numTargets, storagePolicyID,
+        clientMachine, isStriped);
   }
 
   static LocatedBlock makeLocatedBlock(FSNamesystem fsn, Block blk,
@@ -280,9 +284,10 @@ class FSDirWriteFileOp {
         : Arrays.asList(favoredNodes);
 
     // choose targets for the new block to be allocated.
-    return bm.chooseTarget4NewBlock(src, r.replication, clientNode,
-                                    excludedNodesSet, r.blockSize,
-                                    favoredNodesList, r.storagePolicyID);
+    return bm.chooseTarget4NewBlock(src, r.numTargets, clientNode,
+        excludedNodesSet, r.blockSize,
+        favoredNodesList, r.storagePolicyID,
+        r.isStriped);
   }
 
   /**
@@ -861,17 +866,19 @@ class FSDirWriteFileOp {
 
   static class ValidateAddBlockResult {
     final long blockSize;
-    final int replication;
+    final int numTargets;
     final byte storagePolicyID;
     final String clientMachine;
+    final boolean isStriped;
 
     ValidateAddBlockResult(
-        long blockSize, int replication, byte storagePolicyID,
-        String clientMachine) {
+        long blockSize, int numTargets, byte storagePolicyID,
+        String clientMachine, boolean isStriped) {
       this.blockSize = blockSize;
-      this.replication = replication;
+      this.numTargets = numTargets;
       this.storagePolicyID = storagePolicyID;
       this.clientMachine = clientMachine;
+      this.isStriped = isStriped;
     }
   }
 

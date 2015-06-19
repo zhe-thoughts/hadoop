@@ -35,17 +35,18 @@ public class BlockInfoUnderConstructionStriped extends
   /**
    * Constructor with null storage targets.
    */
-  public BlockInfoUnderConstructionStriped(Block blk, ECSchema schema) {
-    this(blk, schema, UNDER_CONSTRUCTION, null);
+  public BlockInfoUnderConstructionStriped(Block blk, ECSchema schema, int cellSize) {
+    this(blk, schema, cellSize, UNDER_CONSTRUCTION, null);
   }
 
   /**
    * Create a striped block that is currently being constructed.
    */
   public BlockInfoUnderConstructionStriped(Block blk, ECSchema schema,
-      HdfsServerConstants.BlockUCState state, DatanodeStorageInfo[] targets) {
+      int cellSize, HdfsServerConstants.BlockUCState state,
+      DatanodeStorageInfo[] targets) {
     super(blk, (short) (schema.getNumDataUnits() + schema.getNumParityUnits()));
-    storageOp = new StripedBlockStorageOp(this, schema);
+    storageOp = new StripedBlockStorageOp(this, schema, cellSize);
     assert getBlockUCState() != COMPLETE :
         "BlockInfoStripedUnderConstruction cannot be in COMPLETE state";
     this.blockUCState = state;

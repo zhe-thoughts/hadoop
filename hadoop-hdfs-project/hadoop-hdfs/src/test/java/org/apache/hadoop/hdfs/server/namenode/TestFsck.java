@@ -1062,8 +1062,8 @@ public class TestFsck {
       fsck.check(pathString, file, res);
       // Also print the output from the fsck, for ex post facto sanity checks
       System.out.println(result.toString());
-      assertEquals(res.missingReplicas, 
-          (NUM_BLOCKS*REPL_FACTOR) - (NUM_BLOCKS*NUM_REPLICAS));
+      assertEquals(res.missingReplicas,
+          (NUM_BLOCKS * REPL_FACTOR) - (NUM_BLOCKS * NUM_REPLICAS));
       assertEquals(res.numExpectedReplicas, NUM_BLOCKS*REPL_FACTOR);
     } finally {
       if(dfs != null) {
@@ -1198,7 +1198,7 @@ public class TestFsck {
 
     HdfsFileStatus file = new HdfsFileStatus(length, isDir, blockReplication,
         blockSize, modTime, accessTime, perms, owner, group, symlink,
-        path, fileId, numChildren, null, storagePolicy);
+        path, fileId, numChildren, null, storagePolicy, null, 0);
     Result res = new Result(conf);
 
     try {

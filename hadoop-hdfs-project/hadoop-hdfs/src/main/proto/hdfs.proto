@@ -356,7 +356,11 @@ message HdfsFileStatusProto {
   optional FileEncryptionInfoProto fileEncryptionInfo = 15;
 
   optional uint32 storagePolicy = 16 [default = 0]; // block storage policy id
-} 
+
+  // Optional field for erasure coding
+  optional ECSchemaProto ecSchema = 17;
+  optional uint32 stripeCellSize = 18;
+}
 
 /**
  * Checksum algorithms/types used in HDFS
@@ -518,6 +522,9 @@ message BlockWithLocationsProto {
   repeated string datanodeUuids = 2; // Datanodes with replicas of the block
   repeated string storageUuids = 3;  // Storages with replicas of the block
   repeated StorageTypeProto storageTypes = 4;
+
+  optional bytes indices = 5;
+  optional uint32 dataBlockNum = 6;
 }
 
 /**
