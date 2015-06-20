@@ -39,12 +39,12 @@ public interface BlockCollection {
   public ContentSummary computeContentSummary(BlockStoragePolicySuite bsps);
 
   /**
-   * @return the number of blocks
+   * @return the number of blocks (striped or contiguous).
    */ 
   public int numBlocks();
 
   /**
-   * Get the blocks.
+   * Get the blocks (striped or contiguous).
    */
   public BlockInfo[] getBlocks();
 
@@ -56,7 +56,7 @@ public interface BlockCollection {
 
   /**
    * Get block replication for the collection 
-   * @return block replication value
+   * @return block replication value. Return 0 if the file is erasure coded.
    */
   public short getPreferredBlockReplication();
 
@@ -71,7 +71,7 @@ public interface BlockCollection {
   public String getName();
 
   /**
-   * Set the block at the given index.
+   * Set the block (contiguous or striped) at the given index.
    */
   public void setBlock(int index, BlockInfo blk);
 
@@ -86,4 +86,9 @@ public interface BlockCollection {
    * @return whether the block collection is under construction.
    */
   public boolean isUnderConstruction();
+
+  /**
+   * @return whether the block collection is in striping format
+   */
+  public boolean isStriped();
 }

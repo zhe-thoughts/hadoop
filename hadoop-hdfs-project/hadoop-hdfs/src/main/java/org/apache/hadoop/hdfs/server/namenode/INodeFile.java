@@ -924,4 +924,13 @@ public class INodeFile extends INodeWithAdditionalFields
     return snapshotBlocks != null &&
         Arrays.asList(snapshotBlocks).contains(block);
   }
+
+  /**
+   * @return true if the file is in the striping layout.
+   */
+  @VisibleForTesting
+  @Override
+  public boolean isStriped() {
+    return false;
+  }
 }

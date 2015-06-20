@@ -64,6 +64,14 @@ public class BlockInfoContiguous extends BlockInfo {
     ContiguousBlockStorageOp.replaceBlock(this, newBlock);
   }
 
+  public boolean isStriped() {
+    return false;
+  }
+
+  public StripedBlockStorageOp getStripedBlockStorageOp() {
+    return null;
+  }
+
   @Override
   BlockInfoUnderConstruction convertCompleteBlockToUC(
       HdfsServerConstants.BlockUCState s, DatanodeStorageInfo[] targets) {
