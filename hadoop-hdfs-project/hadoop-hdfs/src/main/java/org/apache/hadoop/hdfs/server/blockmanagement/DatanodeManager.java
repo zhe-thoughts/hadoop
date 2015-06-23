@@ -1439,6 +1439,13 @@ public class DatanodeManager {
           cmds.add(new BlockCommand(DatanodeProtocol.DNA_TRANSFER, blockPoolId,
               pendingList));
         }
+        // checking pending erasure coding tasks
+        List<BlockECRecoveryCommand.BlockECRecoveryInfo> pendingECList =
+            nodeinfo.getErasureCodeCommand(maxTransfers);
+        if (pendingECList != null) {
+          cmds.add(new BlockECRecoveryCommand(
+              DatanodeProtocol.DNA_ERASURE_CODING_RECOVERY, pendingECList));
+        }
         //check block invalidation
         Block[] blks = nodeinfo.getInvalidateBlocks(blockInvalidateLimit);
         if (blks != null) {

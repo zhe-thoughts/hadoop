@@ -55,6 +55,7 @@ import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs.BlockReportReplica;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -549,9 +550,9 @@ public class BlockManager {
     
     NumberReplicas numReplicas = new NumberReplicas();
     // source node returned is not used
-    chooseSourceDatanode(block, containingNodes,
+    chooseSourceDatanodes(getStoredBlock(block), containingNodes,
         containingLiveReplicasNodes, numReplicas,
-        UnderReplicatedBlocks.LEVEL);
+        new LinkedList<Short>(), UnderReplicatedBlocks.LEVEL);
     
     // containingLiveReplicasNodes can include READ_ONLY_SHARED replicas which are 
     // not included in the numReplicas.liveReplicas() count
@@ -1366,15 +1367,15 @@ public class BlockManager {
   }
 
   /**
-   * Scan blocks in {@link #neededReplications} and assign replication
-   * work to data-nodes they belong to.
+   * Scan blocks in {@link #neededReplications} and assign recovery
+   * (replication or erasure coding) work to data-nodes they belong to.
    *
    * The number of process blocks equals either twice the number of live
    * data-nodes or the number of under-replicated blocks whichever is less.
    *
    * @return number of blocks scheduled for replication during this iteration.
    */
-  int computeReplicationWork(int blocksToProcess) {
+  int computeBlockRecoveryWork(int blocksToProcess) {
     List<List<BlockInfo>> blocksToReplicate = null;
     namesystem.writeLock();
     try {
@@ -1384,30 +1385,32 @@ public class BlockManager {
     } finally {
       namesystem.writeUnlock();
     }
-    return computeReplicationWorkForBlocks(blocksToReplicate);
+    return computeRecoveryWorkForBlocks(blocksToReplicate);
   }
 
-  /** Replicate a set of blocks
+  /**
+   * Recover a set of blocks to full strength through replication or
+   * erasure coding
    *
-   * @param blocksToReplicate blocks to be replicated, for each priority
+   * @param blocksToRecover blocks to be recovered, for each priority
    * @return the number of blocks scheduled for replication
    */
   @VisibleForTesting
-  int computeReplicationWorkForBlocks(List<List<BlockInfo>> blocksToReplicate) {
+  int computeRecoveryWorkForBlocks(List<List<BlockInfo>> blocksToRecover) {
     int requiredReplication, numEffectiveReplicas;
     List<DatanodeDescriptor> containingNodes;
-    DatanodeDescriptor srcNode;
-    BlockCollection bc = null;
+    BlockCollection bc;
     int additionalReplRequired;
 
     int scheduledWork = 0;
-    List<ReplicationWork> work = new LinkedList<>();
+    List<BlockRecoveryWork> recovWork = new LinkedList<>();
 
+    // Step 1: categorize at-risk blocks into replication and EC tasks
     namesystem.writeLock();
     try {
       synchronized (neededReplications) {
-        for (int priority = 0; priority < blocksToReplicate.size(); priority++) {
-          for (BlockInfo block : blocksToReplicate.get(priority)) {
+        for (int priority = 0; priority < blocksToRecover.size(); priority++) {
+          for (BlockInfo block : blocksToRecover.get(priority)) {
             // block should belong to a file
             bc = blocksMap.getBlockCollection(block);
             // abandoned block or block reopened for append
@@ -1418,34 +1421,37 @@ public class BlockManager {
               continue;
             }
 
-            requiredReplication = bc.getPreferredBlockReplication();
+            requiredReplication = getExpectedReplicaNum(bc, block);
 
             // get a source data-node
             containingNodes = new ArrayList<>();
             List<DatanodeStorageInfo> liveReplicaNodes = new ArrayList<>();
             NumberReplicas numReplicas = new NumberReplicas();
-            srcNode = chooseSourceDatanode(
-                block, containingNodes, liveReplicaNodes, numReplicas,
-                priority);
-            if(srcNode == null) { // block can not be replicated from any node
-              LOG.debug("Block " + block + " cannot be repl from any node");
+            List<Short> liveBlockIndices = new ArrayList<>();
+            final DatanodeDescriptor[] srcNodes = chooseSourceDatanodes(block,
+                containingNodes, liveReplicaNodes, numReplicas,
+                liveBlockIndices, priority);
+            if(srcNodes == null || srcNodes.length == 0) {
+              // block can not be replicated from any node
+              LOG.debug("Block " + block + " cannot be recovered " +
+                  "from any node");
               continue;
             }
 
-            // liveReplicaNodes can include READ_ONLY_SHARED replicas which are 
+            // liveReplicaNodes can include READ_ONLY_SHARED replicas which are
             // not included in the numReplicas.liveReplicas() count
             assert liveReplicaNodes.size() >= numReplicas.liveReplicas();
 
             // do not schedule more if enough replicas is already pending
             numEffectiveReplicas = numReplicas.liveReplicas() +
-                                    pendingReplications.getNumReplicas(block);
-      
+                pendingReplications.getNumReplicas(block);
+
             if (numEffectiveReplicas >= requiredReplication) {
               if ( (pendingReplications.getNumReplicas(block) > 0) ||
-                   (blockHasEnoughRacks(block, requiredReplication)) ) {
+                  (blockHasEnoughRacks(block, requiredReplication)) ) {
                 neededReplications.remove(block, priority); // remove from neededReplications
                 blockLog.info("BLOCK* Removing {} from neededReplications as" +
-                        " it has enough replicas", block);
+                    " it has enough replicas", block);
                 continue;
               }
             }
@@ -1456,9 +1462,20 @@ public class BlockManager {
             } else {
               additionalReplRequired = 1; // Needed on a new rack
             }
-            work.add(new ReplicationWork(block, bc, srcNode,
-                containingNodes, liveReplicaNodes, additionalReplRequired,
-                priority));
+            if (block.isStriped()) {
+              short[] indices = new short[liveBlockIndices.size()];
+              for (int i = 0 ; i < liveBlockIndices.size(); i++) {
+                indices[i] = liveBlockIndices.get(i);
+              }
+              ErasureCodingWork ecw = new ErasureCodingWork(block, bc, srcNodes,
+                  containingNodes, liveReplicaNodes, additionalReplRequired,
+                  priority, indices);
+              recovWork.add(ecw);
+            } else {
+              recovWork.add(new ReplicationWork(block, bc, srcNodes,
+                  containingNodes, liveReplicaNodes, additionalReplRequired,
+                  priority));
+            }
           }
         }
       }
@@ -1466,8 +1483,9 @@ public class BlockManager {
       namesystem.writeUnlock();
     }
 
-    final Set<Node> excludedNodes = new HashSet<>();
-    for(ReplicationWork rw : work){
+    // Step 2: choose target nodes for each recovery task
+    final Set<Node> excludedNodes = new HashSet<Node>();
+    for(BlockRecoveryWork rw : recovWork){
       // Exclude all of the containing nodes from being targets.
       // This list includes decommissioning or corrupt nodes.
       excludedNodes.clear();
@@ -1483,9 +1501,10 @@ public class BlockManager {
       rw.chooseTargets(placementPolicy, storagePolicySuite, excludedNodes);
     }
 
+    // Step 3: add tasks to the DN
     namesystem.writeLock();
     try {
-      for(ReplicationWork rw : work){
+      for(BlockRecoveryWork rw : recovWork){
         final DatanodeStorageInfo[] targets = rw.targets;
         if(targets == null || targets.length == 0){
           rw.targets = null;
@@ -1504,27 +1523,27 @@ public class BlockManager {
             rw.targets = null;
             continue;
           }
-          requiredReplication = bc.getPreferredBlockReplication();
+          requiredReplication = getExpectedReplicaNum(bc, block);
 
           // do not schedule more if enough replicas is already pending
           NumberReplicas numReplicas = countNodes(block);
           numEffectiveReplicas = numReplicas.liveReplicas() +
-            pendingReplications.getNumReplicas(block);
+              pendingReplications.getNumReplicas(block);
 
           if (numEffectiveReplicas >= requiredReplication) {
             if ( (pendingReplications.getNumReplicas(block) > 0) ||
-                 (blockHasEnoughRacks(block, requiredReplication)) ) {
+                (blockHasEnoughRacks(block, requiredReplication)) ) {
               neededReplications.remove(block, priority); // remove from neededReplications
               rw.targets = null;
               blockLog.info("BLOCK* Removing {} from neededReplications as" +
-                      " it has enough replicas", block);
+                  " it has enough replicas", block);
               continue;
             }
           }
 
           if ( (numReplicas.liveReplicas() >= requiredReplication) &&
-               (!blockHasEnoughRacks(block, requiredReplication)) ) {
-            if (rw.srcNode.getNetworkLocation().equals(
+              (!blockHasEnoughRacks(block, requiredReplication)) ) {
+            if (rw.srcNodes[0].getNetworkLocation().equals(
                 targets[0].getDatanodeDescriptor().getNetworkLocation())) {
               //No use continuing, unless a new rack in this case
               continue;
@@ -1532,7 +1551,32 @@ public class BlockManager {
           }
 
           // Add block to the to be replicated list
-          rw.srcNode.addBlockToBeReplicated(block, targets);
+          if (block.isStriped()) {
+            assert rw instanceof ErasureCodingWork;
+            assert rw.targets.length > 0;
+            String src = block.getBlockCollection().getName();
+            ErasureCodingZone ecZone = null;
+            try {
+              ecZone = namesystem.getErasureCodingZoneForPath(src);
+            } catch (IOException e) {
+              blockLog
+                  .warn("Failed to get the EC zone for the file {} ", src);
+            }
+            if (ecZone == null) {
+              blockLog.warn("No EC schema found for the file {}. "
+                  + "So cannot proceed for recovery", src);
+              // TODO: we may have to revisit later for what we can do better to
+              // handle this case.
+              continue;
+            }
+            rw.targets[0].getDatanodeDescriptor().addBlockToBeErasureCoded(
+                new ExtendedBlock(namesystem.getBlockPoolId(), block),
+                rw.srcNodes, rw.targets,
+                ((ErasureCodingWork) rw).liveBlockIndicies,
+                ecZone.getSchema(), ecZone.getCellSize());
+          } else {
+            rw.srcNodes[0].addBlockToBeReplicated(block, targets);
+          }
           scheduledWork++;
           DatanodeStorageInfo.incrementBlocksScheduled(targets);
 
@@ -1542,7 +1586,7 @@ public class BlockManager {
           pendingReplications.increment(block,
               DatanodeStorageInfo.toDatanodeDescriptors(targets));
           blockLog.debug("BLOCK* block {} is moved from neededReplications to "
-                  + "pendingReplications", block);
+              + "pendingReplications", block);
 
           // remove from neededReplications
           if(numEffectiveReplicas + targets.length >= requiredReplication) {
@@ -1556,15 +1600,15 @@ public class BlockManager {
 
     if (blockLog.isInfoEnabled()) {
       // log which blocks have been scheduled for replication
-      for(ReplicationWork rw : work){
+      for(BlockRecoveryWork rw : recovWork){
         DatanodeStorageInfo[] targets = rw.targets;
         if (targets != null && targets.length != 0) {
           StringBuilder targetList = new StringBuilder("datanode(s)");
-          for (int k = 0; k < targets.length; k++) {
+          for (DatanodeStorageInfo target : targets) {
             targetList.append(' ');
-            targetList.append(targets[k].getDatanodeDescriptor());
+            targetList.append(target.getDatanodeDescriptor());
           }
-          blockLog.info("BLOCK* ask {} to replicate {} to {}", rw.srcNode,
+          blockLog.info("BLOCK* ask {} to replicate {} to {}", rw.srcNodes,
               rw.block, targetList);
         }
       }
@@ -1654,55 +1698,59 @@ public class BlockManager {
   }
 
   /**
-   * Parse the data-nodes the block belongs to and choose one,
-   * which will be the replication source.
+   * Parse the data-nodes the block belongs to and choose a certain number
+   * from them to be the recovery sources.
    *
    * We prefer nodes that are in DECOMMISSION_INPROGRESS state to other nodes
    * since the former do not have write traffic and hence are less busy.
    * We do not use already decommissioned nodes as a source.
-   * Otherwise we choose a random node among those that did not reach their
-   * replication limits.  However, if the replication is of the highest priority
-   * and all nodes have reached their replication limits, we will choose a
-   * random node despite the replication limit.
+   * Otherwise we randomly choose nodes among those that did not reach their
+   * replication limits. However, if the recovery work is of the highest
+   * priority and all nodes have reached their replication limits, we will
+   * randomly choose the desired number of nodes despite the replication limit.
    *
    * In addition form a list of all nodes containing the block
    * and calculate its replication numbers.
    *
    * @param block Block for which a replication source is needed
-   * @param containingNodes List to be populated with nodes found to contain the 
-   *                        given block
-   * @param nodesContainingLiveReplicas List to be populated with nodes found to
-   *                                    contain live replicas of the given block
-   * @param numReplicas NumberReplicas instance to be initialized with the 
-   *                                   counts of live, corrupt, excess, and
-   *                                   decommissioned replicas of the given
-   *                                   block.
+   * @param containingNodes List to be populated with nodes found to contain
+   *                        the given block
+   * @param nodesContainingLiveReplicas List to be populated with nodes found
+   *                                    to contain live replicas of the given
+   *                                    block
+   * @param numReplicas NumberReplicas instance to be initialized with the
+   *                    counts of live, corrupt, excess, and decommissioned
+   *                    replicas of the given block.
+   * @param liveBlockIndices List to be populated with indices of healthy
+   *                         blocks in a striped block group
    * @param priority integer representing replication priority of the given
    *                 block
-   * @return the DatanodeDescriptor of the chosen node from which to replicate
-   *         the given block
+   * @return the array of DatanodeDescriptor of the chosen nodes from which to
+   *         recover the given block
    */
-   @VisibleForTesting
-   DatanodeDescriptor chooseSourceDatanode(Block block,
-       List<DatanodeDescriptor> containingNodes,
-       List<DatanodeStorageInfo>  nodesContainingLiveReplicas,
-       NumberReplicas numReplicas,
-       int priority) {
+  @VisibleForTesting
+  DatanodeDescriptor[] chooseSourceDatanodes(BlockInfo block,
+      List<DatanodeDescriptor> containingNodes,
+      List<DatanodeStorageInfo> nodesContainingLiveReplicas,
+      NumberReplicas numReplicas,
+      List<Short> liveBlockIndices, int priority) {
     containingNodes.clear();
     nodesContainingLiveReplicas.clear();
-    DatanodeDescriptor srcNode = null;
+    List<DatanodeDescriptor> srcNodes = new ArrayList<>();
     int live = 0;
     int decommissioned = 0;
     int decommissioning = 0;
     int corrupt = 0;
     int excess = 0;
-    
+    liveBlockIndices.clear();
+    final boolean isStriped = block.isStriped();
+
     Collection<DatanodeDescriptor> nodesCorrupt = corruptReplicas.getNodes(block);
-    for(DatanodeStorageInfo storage : getStorages(block)) {
+    for (DatanodeStorageInfo storage : blocksMap.getStorages(block)) {
       final DatanodeDescriptor node = storage.getDatanodeDescriptor();
       LightWeightLinkedSet<BlockInfo> excessBlocks =
-        excessReplicateMap.get(node.getDatanodeUuid());
-      int countableReplica = storage.getState() == State.NORMAL ? 1 : 0; 
+          excessReplicateMap.get(node.getDatanodeUuid());
+      int countableReplica = storage.getState() == State.NORMAL ? 1 : 0;
       if ((nodesCorrupt != null) && (nodesCorrupt.contains(node)))
         corrupt += countableReplica;
       else if (node.isDecommissionInProgress()) {
@@ -1720,8 +1768,8 @@ public class BlockManager {
       // If so, do not select the node as src node
       if ((nodesCorrupt != null) && nodesCorrupt.contains(node))
         continue;
-      if(priority != UnderReplicatedBlocks.QUEUE_HIGHEST_PRIORITY 
-          && !node.isDecommissionInProgress() 
+      if(priority != UnderReplicatedBlocks.QUEUE_HIGHEST_PRIORITY
+          && !node.isDecommissionInProgress()
           && node.getNumberOfBlocksToBeReplicated() >= maxReplicationStreams)
       {
         continue; // already reached replication limit
@@ -1737,21 +1785,25 @@ public class BlockManager {
       if(node.isDecommissioned())
         continue;
 
-      // We got this far, current node is a reasonable choice
-      if (srcNode == null) {
-        srcNode = node;
+      if(isStriped || srcNodes.isEmpty()) {
+        srcNodes.add(node);
+        if (isStriped) {
+          liveBlockIndices.add((short) block.getStripedBlockStorageOp().
+              getStorageBlockIndex(storage));
+        }
         continue;
       }
-      // switch to a different node randomly
+      // for replicated block, switch to a different node randomly
       // this to prevent from deterministically selecting the same node even
       // if the node failed to replicate the block on previous iterations
-      if(ThreadLocalRandom.current().nextBoolean())
-        srcNode = node;
+      if (!isStriped && ThreadLocalRandom.current().nextBoolean()) {
+        srcNodes.set(0, node);
+      }
     }
     if(numReplicas != null)
       numReplicas.initialize(live, decommissioned, decommissioning, corrupt,
           excess, 0);
-    return srcNode;
+    return srcNodes.toArray(new DatanodeDescriptor[srcNodes.size()]);
   }
 
   /**
@@ -4002,7 +4054,7 @@ public class BlockManager {
   }
 
   /**
-   * Periodically calls computeReplicationWork().
+   * Periodically calls {@link #computeBlockRecoveryWork}.
    */
   private class ReplicationMonitor implements Runnable {
 
@@ -4060,7 +4112,7 @@ public class BlockManager {
     final int nodesToProcess = (int) Math.ceil(numlive
         * this.blocksInvalidateWorkPct);
 
-    int workFound = this.computeReplicationWork(blocksToProcess);
+    int workFound = this.computeBlockRecoveryWork(blocksToProcess);
 
     // Update counters
     namesystem.writeLock();
@@ -4125,47 +4177,108 @@ public class BlockManager {
         null);
   }
 
-  private static class ReplicationWork {
+  /**
+   * This class is used internally by {@link this#computeRecoveryWorkForBlocks}
+   * to represent a task to recover a block through replication or erasure
+   * coding. Recovery is done by transferring data from srcNodes to targets
+   */
+  private abstract static class BlockRecoveryWork {
+    final BlockInfo block;
+    final BlockCollection bc;
 
-    private final BlockInfo block;
-    private final BlockCollection bc;
+    /**
+     * An erasure coding recovery task has multiple source nodes.
+     * A replication task only has 1 source node, stored on top of the array
+     */
+    final DatanodeDescriptor[] srcNodes;
+    /** Nodes containing the block; avoid them in choosing new targets */
+    final List<DatanodeDescriptor> containingNodes;
+    /** Required by {@link BlockPlacementPolicy#chooseTarget} */
+    final List<DatanodeStorageInfo> liveReplicaStorages;
+    final int additionalReplRequired;
 
-    private final DatanodeDescriptor srcNode;
-    private final List<DatanodeDescriptor> containingNodes;
-    private final List<DatanodeStorageInfo> liveReplicaStorages;
-    private final int additionalReplRequired;
+    DatanodeStorageInfo[] targets;
+    final int priority;
 
-    private DatanodeStorageInfo targets[];
-    private final int priority;
-
-    public ReplicationWork(BlockInfo block,
+    BlockRecoveryWork(BlockInfo block,
         BlockCollection bc,
-        DatanodeDescriptor srcNode,
+        DatanodeDescriptor[] srcNodes,
         List<DatanodeDescriptor> containingNodes,
         List<DatanodeStorageInfo> liveReplicaStorages,
         int additionalReplRequired,
         int priority) {
       this.block = block;
       this.bc = bc;
-      this.srcNode = srcNode;
-      this.srcNode.incrementPendingReplicationWithoutTargets();
+      this.srcNodes = srcNodes;
       this.containingNodes = containingNodes;
       this.liveReplicaStorages = liveReplicaStorages;
       this.additionalReplRequired = additionalReplRequired;
       this.priority = priority;
       this.targets = null;
     }
-    
-    private void chooseTargets(BlockPlacementPolicy blockplacement,
+
+    abstract void chooseTargets(BlockPlacementPolicy blockplacement,
+        BlockStoragePolicySuite storagePolicySuite,
+        Set<Node> excludedNodes);
+  }
+
+  private static class ReplicationWork extends BlockRecoveryWork {
+    ReplicationWork(BlockInfo block,
+        BlockCollection bc,
+        DatanodeDescriptor[] srcNodes,
+        List<DatanodeDescriptor> containingNodes,
+        List<DatanodeStorageInfo> liveReplicaStorages,
+        int additionalReplRequired,
+        int priority) {
+      super(block, bc, srcNodes, containingNodes,
+          liveReplicaStorages, additionalReplRequired, priority);
+      LOG.debug("Creating a ReplicationWork to recover " + block);
+    }
+
+    @Override
+    void chooseTargets(BlockPlacementPolicy blockplacement,
         BlockStoragePolicySuite storagePolicySuite,
         Set<Node> excludedNodes) {
+      assert srcNodes.length > 0
+          : "At least 1 source node should have been selected";
       try {
         targets = blockplacement.chooseTarget(bc.getName(),
-            additionalReplRequired, srcNode, liveReplicaStorages, false,
+            additionalReplRequired, srcNodes[0], liveReplicaStorages, false,
             excludedNodes, block.getNumBytes(),
             storagePolicySuite.getPolicy(bc.getStoragePolicyID()));
       } finally {
-        srcNode.decrementPendingReplicationWithoutTargets();
+        srcNodes[0].decrementPendingReplicationWithoutTargets();
+      }
+    }
+  }
+
+  private static class ErasureCodingWork extends BlockRecoveryWork {
+    final short[] liveBlockIndicies;
+
+    ErasureCodingWork(BlockInfo block,
+        BlockCollection bc,
+        DatanodeDescriptor[] srcNodes,
+        List<DatanodeDescriptor> containingNodes,
+        List<DatanodeStorageInfo> liveReplicaStorages,
+        int additionalReplRequired,
+        int priority, short[] liveBlockIndicies) {
+      super(block, bc, srcNodes, containingNodes,
+          liveReplicaStorages, additionalReplRequired, priority);
+      this.liveBlockIndicies = liveBlockIndicies;
+      LOG.debug("Creating an ErasureCodingWork to recover " + block);
+    }
+
+    @Override
+    void chooseTargets(BlockPlacementPolicy blockplacement,
+        BlockStoragePolicySuite storagePolicySuite,
+        Set<Node> excludedNodes) {
+      try {
+        // TODO: new placement policy for EC considering multiple writers
+        targets = blockplacement.chooseTarget(bc.getName(),
+            additionalReplRequired, srcNodes[0], liveReplicaStorages, false,
+            excludedNodes, block.getNumBytes(),
+            storagePolicySuite.getPolicy(bc.getStoragePolicyID()));
+      } finally {
       }
     }
   }

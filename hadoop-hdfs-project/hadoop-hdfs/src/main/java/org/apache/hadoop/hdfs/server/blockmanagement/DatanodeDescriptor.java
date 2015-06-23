@@ -41,13 +41,16 @@ import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
+import org.apache.hadoop.hdfs.server.protocol.BlockECRecoveryCommand.BlockECRecoveryInfo;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.util.IntrusiveCollection;
 import org.apache.hadoop.util.Time;
 
@@ -218,6 +221,9 @@ public class DatanodeDescriptor extends DatanodeInfo {
 
   /** A queue of blocks to be replicated by this datanode */
   private final BlockQueue<BlockTargetPair> replicateBlocks = new BlockQueue<BlockTargetPair>();
+  /** A queue of blocks to be erasure coded by this datanode */
+  private final BlockQueue<BlockECRecoveryInfo> erasurecodeBlocks =
+      new BlockQueue<>();
   /** A queue of blocks to be recovered by this datanode */
   private final BlockQueue<BlockInfoUnderConstruction> recoverBlocks =
                                 new BlockQueue<BlockInfoUnderConstruction>();
@@ -376,6 +382,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
       this.invalidateBlocks.clear();
       this.recoverBlocks.clear();
       this.replicateBlocks.clear();
+      this.erasurecodeBlocks.clear();
     }
     // pendingCached, cached, and pendingUncached are protected by the
     // FSN lock.
@@ -597,6 +604,20 @@ public class DatanodeDescriptor extends DatanodeInfo {
   }
 
   /**
+   * Store block erasure coding work.
+   */
+  void addBlockToBeErasureCoded(ExtendedBlock block,
+      DatanodeDescriptor[] sources, DatanodeStorageInfo[] targets,
+      short[] liveBlockIndices, ECSchema ecSchema, int cellSize) {
+    assert (block != null && sources != null && sources.length > 0);
+    BlockECRecoveryInfo task = new BlockECRecoveryInfo(block, sources, targets,
+        liveBlockIndices, ecSchema, cellSize);
+    erasurecodeBlocks.offer(task);
+    BlockManager.LOG.debug("Adding block recovery task " + task + "to "
+        + getName() + ", current queue size is " + erasurecodeBlocks.size());
+  }
+
+  /**
    * Store block recovery work.
    */
   void addBlockToBeRecovered(BlockInfoUnderConstruction block) {
@@ -639,6 +660,10 @@ public class DatanodeDescriptor extends DatanodeInfo {
 
   public List<BlockTargetPair> getReplicationCommand(int maxTransfers) {
     return replicateBlocks.poll(maxTransfers);
+  }
+
+  public List<BlockECRecoveryInfo> getErasureCodeCommand(int maxTransfers) {
+    return erasurecodeBlocks.poll(maxTransfers);
   }
 
   public BlockInfoUnderConstruction[] getLeaseRecoveryCommand(
@@ -841,6 +866,10 @@ public class DatanodeDescriptor extends DatanodeInfo {
     int repl = replicateBlocks.size();
     if (repl > 0) {
       sb.append(" ").append(repl).append(" blocks to be replicated;");
+    }
+    int ec = erasurecodeBlocks.size();
+    if(ec > 0) {
+      sb.append(" ").append(ec).append(" blocks to be erasure coded;");
     }
     int inval = invalidateBlocks.size();
     if (inval > 0) {
