@@ -92,6 +92,11 @@ message INodeSection {
     optional string clientMachine = 2;
   }
 
+  message StripedBlocksFeature {
+    // store striped blocks related information
+    optional uint32 cellSize = 1;
+  }
+
   message AclFeatureProto {
     /**
      * An ACL entry is represented by a 32-bit integer in Big Endian
@@ -140,6 +145,7 @@ message INodeSection {
     optional AclFeatureProto acl = 8;
     optional XAttrFeatureProto xAttrs = 9;
     optional uint32 storagePolicyID = 10;
+    optional StripedBlocksFeature stripedBlocks = 11;
   }
 
   message QuotaByStorageTypeEntryProto {

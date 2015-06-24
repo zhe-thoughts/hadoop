@@ -476,7 +476,7 @@ public class INodeFile extends INodeWithAdditionalFields
       assert hasNoContiguousBlock();
       return sb.getBlocks();
     } else {
-      return this.blocks;
+      return getContiguousBlocks();
     }
   }
 
