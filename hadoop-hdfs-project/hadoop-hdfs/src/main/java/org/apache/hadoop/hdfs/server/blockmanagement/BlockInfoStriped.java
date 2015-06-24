@@ -54,11 +54,11 @@ public class BlockInfoStriped extends BlockInfo {
   }
 
   @Override
-  BlockInfoUnderConstruction convertCompleteBlockToUC(
+  BlockInfoUnderConstructionStriped convertCompleteBlockToUC(
       HdfsServerConstants.BlockUCState s, DatanodeStorageInfo[] targets) {
-    BlockInfoUnderConstructionContiguous ucBlock =
-        new BlockInfoUnderConstructionContiguous(this,
-            getBlockCollection().getPreferredBlockReplication(), s, targets);
+    BlockInfoUnderConstructionStriped ucBlock =
+        new BlockInfoUnderConstructionStriped(this,
+            storageOp.getSchema(), storageOp.getCellSize(), s, targets);
     ucBlock.setBlockCollection(getBlockCollection());
     return ucBlock;
   }
