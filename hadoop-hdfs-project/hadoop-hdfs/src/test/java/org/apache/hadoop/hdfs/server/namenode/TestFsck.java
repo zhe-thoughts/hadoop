@@ -84,6 +84,8 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeManager;
 import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.Result;
+import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.ReplicationResult;
+import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck.ErasureCodingResult;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.tools.DFSck;
 import org.apache.hadoop.io.IOUtils;
@@ -1058,13 +1060,14 @@ public class TestFsck {
       final HdfsFileStatus file = 
           namenode.getRpcServer().getFileInfo(pathString);
       assertNotNull(file);
-      Result res = new Result(conf);
-      fsck.check(pathString, file, res);
+      Result replRes = new ReplicationResult(conf);
+      Result ecRes = new ErasureCodingResult(conf);
+      fsck.check(pathString, file, replRes, ecRes);
       // Also print the output from the fsck, for ex post facto sanity checks
       System.out.println(result.toString());
-      assertEquals(res.missingReplicas, 
+      assertEquals(replRes.missingReplicas,
           (NUM_BLOCKS*REPL_FACTOR) - (NUM_BLOCKS*NUM_REPLICAS));
-      assertEquals(res.numExpectedReplicas, NUM_BLOCKS*REPL_FACTOR);
+      assertEquals(replRes.numExpectedReplicas, NUM_BLOCKS*REPL_FACTOR);
     } finally {
       if(dfs != null) {
         dfs.close();
@@ -1135,10 +1138,11 @@ public class TestFsck {
       final HdfsFileStatus file = 
           namenode.getRpcServer().getFileInfo(pathString);
       assertNotNull(file);
-      Result res = new Result(conf);
-      fsck.check(pathString, file, res);
+      Result replRes = new ReplicationResult(conf);
+      Result ecRes = new ErasureCodingResult(conf);
+      fsck.check(pathString, file, replRes, ecRes);
       // check misReplicatedBlock number.
-      assertEquals(res.numMisReplicatedBlocks, NUM_BLOCKS);
+      assertEquals(replRes.numMisReplicatedBlocks, NUM_BLOCKS);
     } finally {
       if(dfs != null) {
         dfs.close();
@@ -1199,14 +1203,15 @@ public class TestFsck {
     HdfsFileStatus file = new HdfsFileStatus(length, isDir, blockReplication,
         blockSize, modTime, accessTime, perms, owner, group, symlink,
         path, fileId, numChildren, null, storagePolicy, null, 0);
-    Result res = new Result(conf);
+    Result replRes = new ReplicationResult(conf);
+    Result ecRes = new ErasureCodingResult(conf);
 
     try {
-      fsck.check(pathString, file, res);
+      fsck.check(pathString, file, replRes, ecRes);
     } catch (Exception e) {
       fail("Unexpected exception " + e.getMessage());
     }
-    assertTrue(res.toString().contains("HEALTHY"));
+    assertTrue(replRes.isHealthy());
   }
 
   /** Test fsck with symlinks in the filesystem */
