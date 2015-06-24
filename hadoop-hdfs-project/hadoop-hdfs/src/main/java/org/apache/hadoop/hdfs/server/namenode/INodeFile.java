@@ -34,12 +34,16 @@ import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstruction;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstructionContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstructionStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
+import org.apache.hadoop.hdfs.server.blockmanagement.StripedBlockStorageOp;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiff;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.FileDiffList;
@@ -83,7 +87,7 @@ public class INodeFile extends INodeWithAdditionalFields
    */
   static enum HeaderFormat {
     PREFERRED_BLOCK_SIZE(null, 48, 1),
-    REPLICATION(PREFERRED_BLOCK_SIZE.BITS, 12, 1),
+    REPLICATION(PREFERRED_BLOCK_SIZE.BITS, 12, 0),
     STORAGE_POLICY_ID(REPLICATION.BITS, BlockStoragePolicySuite.ID_BIT_LENGTH,
         0);
 
@@ -172,6 +176,27 @@ public class INodeFile extends INodeWithAdditionalFields
         && getXAttrFeature() == other.getXAttrFeature();
   }
 
+    /* Start of StripedBlock Feature */
+
+  public final FileWithStripedBlocksFeature getStripedBlocksFeature() {
+    return getFeature(FileWithStripedBlocksFeature.class);
+  }
+
+  public FileWithStripedBlocksFeature addStripedBlocksFeature() {
+    assert blocks == null || blocks.length == 0:
+        "The file contains contiguous blocks";
+    assert !isStriped();
+    this.setFileReplication((short) 0);
+    FileWithStripedBlocksFeature sb = new FileWithStripedBlocksFeature();
+    addFeature(sb);
+    return sb;
+  }
+
+  /** Used to make sure there is no contiguous block related info */
+  private boolean hasNoContiguousBlock() {
+    return (blocks == null || blocks.length == 0) && getFileReplication() == 0;
+  }
+
   /* Start of Under-Construction Feature */
 
   /**
@@ -227,7 +252,15 @@ public class INodeFile extends INodeWithAdditionalFields
 
   @Override // BlockCollection
   public void setBlock(int index, BlockInfo blk) {
-    this.blocks[index] = blk;
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    if (sb == null) {
+      assert !blk.isStriped();
+      this.blocks[index] = blk;
+    } else {
+      assert blk.isStriped();
+      assert hasNoContiguousBlock();
+      sb.setBlock(index, blk);
+    }
   }
 
   @Override // BlockCollection, the file should be under construction
@@ -254,6 +287,12 @@ public class INodeFile extends INodeWithAdditionalFields
   BlockInfoUnderConstruction removeLastBlock(Block oldblock) {
     Preconditions.checkState(isUnderConstruction(),
         "file is no longer under construction");
+    return isStriped() ? removeLastStripedBlock(oldblock) :
+        removeLastContiguousBlock(oldblock);
+  }
+
+  private BlockInfoUnderConstructionContiguous removeLastContiguousBlock(
+      Block oldblock) {
     if (blocks == null || blocks.length == 0) {
       return null;
     }
@@ -262,13 +301,22 @@ public class INodeFile extends INodeWithAdditionalFields
       return null;
     }
 
-    BlockInfoUnderConstruction uc =
-        (BlockInfoUnderConstruction)blocks[size_1];
+    BlockInfoUnderConstructionContiguous uc =
+        (BlockInfoUnderConstructionContiguous)blocks[size_1];
     //copy to a new list
     BlockInfo[] newlist = new BlockInfo[size_1];
     System.arraycopy(blocks, 0, newlist, 0, size_1);
-    setBlocks(newlist);
+    setContiguousBlocks(newlist);
     return uc;
+  }
+
+  private BlockInfoUnderConstructionStriped removeLastStripedBlock(
+      Block oldblock) {
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    Preconditions.checkNotNull(sb);
+    Preconditions.checkState(hasNoContiguousBlock(),
+        "A file with striped feature shouldn't have any contiguous blocks.");
+    return sb.removeLastBlock(oldblock);
   }
 
   /* End of Under-Construction Feature */
@@ -350,6 +398,7 @@ public class INodeFile extends INodeWithAdditionalFields
 
   /** The same as getFileReplication(null). */
   @Override // INodeFileAttributes
+  // TODO properly handle striped files
   public final short getFileReplication() {
     return getFileReplication(CURRENT_STATE_ID);
   }
@@ -365,7 +414,8 @@ public class INodeFile extends INodeWithAdditionalFields
       }
       max = maxInSnapshot > max ? maxInSnapshot : max;
     }
-    return max;
+    return isStriped() ?
+        HdfsConstants.NUM_DATA_BLOCKS + HdfsConstants.NUM_PARITY_BLOCKS : max;
   }
 
   /** Set the replication factor of this file. */
@@ -421,6 +471,17 @@ public class INodeFile extends INodeWithAdditionalFields
   /** @return the blocks of the file. */
   @Override
   public BlockInfo[] getBlocks() {
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    if (sb != null) {
+      assert hasNoContiguousBlock();
+      return sb.getBlocks();
+    } else {
+      return this.blocks;
+    }
+  }
+
+  /** Used by snapshot diff */
+  public BlockInfo[] getContiguousBlocks() {
     return this.blocks;
   }
 
@@ -429,6 +490,7 @@ public class INodeFile extends INodeWithAdditionalFields
     if(snapshot == CURRENT_STATE_ID || getDiffs() == null)
       return getBlocks();
     FileDiff diff = getDiffs().getDiffById(snapshot);
+    // note that currently FileDiff can only store contiguous blocks
     BlockInfo[] snapshotBlocks =
         diff == null ? getBlocks() : diff.getBlocks();
     if(snapshotBlocks != null)
@@ -466,27 +528,42 @@ public class INodeFile extends INodeWithAdditionalFields
       size += in.blocks.length;
     }
 
-    setBlocks(newlist);
+    setContiguousBlocks(newlist);
     updateBlockCollection();
   }
-  
+
   /**
-   * add a block to the block list
+   * add a contiguous block to the block list
    */
-  void addBlock(BlockInfo newblock) {
+  private void addContiguousBlock(BlockInfo newblock) {
+    Preconditions.checkArgument(!newblock.isStriped(),
+        "Adding a contiguous block.");
     if (this.blocks == null) {
-      this.setBlocks(new BlockInfo[]{newblock});
+      this.setContiguousBlocks(new BlockInfo[]{newblock});
     } else {
       int size = this.blocks.length;
       BlockInfo[] newlist = new BlockInfo[size + 1];
       System.arraycopy(this.blocks, 0, newlist, 0, size);
       newlist[size] = newblock;
-      this.setBlocks(newlist);
+      this.setContiguousBlocks(newlist);
+    }
+  }
+
+  /** add a striped or contiguous block */
+  void addBlock(BlockInfo newblock) {
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    if (sb == null) {
+      assert !newblock.isStriped();
+      addContiguousBlock(newblock);
+    } else {
+      assert newblock.isStriped();
+      assert hasNoContiguousBlock();
+      sb.addBlock(newblock);
     }
   }
 
   /** Set the blocks. */
-  public void setBlocks(BlockInfo[] blocks) {
+  public void setContiguousBlocks(BlockInfo[] blocks) {
     this.blocks = blocks;
   }
 
@@ -537,13 +614,19 @@ public class INodeFile extends INodeWithAdditionalFields
   }
 
   public void clearFile(ReclaimContext reclaimContext) {
-    if (blocks != null && reclaimContext.collectedBlocks != null) {
-      for (BlockInfo blk : blocks) {
+    BlockInfo[] blks = getBlocks();
+    if (blks != null && reclaimContext.collectedBlocks != null) {
+      for (BlockInfo blk : blks) {
         reclaimContext.collectedBlocks.addDeleteBlock(blk);
         blk.setBlockCollection(null);
       }
     }
-    setBlocks(null);
+    setContiguousBlocks(null);
+
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    if (sb != null) {
+      sb.clear();
+    }
     if (getAclFeature() != null) {
       AclStorage.removeAclFeature(getAclFeature());
     }
@@ -582,6 +665,10 @@ public class INodeFile extends INodeWithAdditionalFields
 
     final long ssDeltaNoReplication;
     short replication;
+    if (isStriped()) {
+      return computeQuotaUsageWithStriped(bsp, counts);
+    }
+
     if (last < lastSnapshotId) {
       ssDeltaNoReplication = computeFileSize(true, false);
       replication = getFileReplication();
@@ -601,6 +688,18 @@ public class INodeFile extends INodeWithAdditionalFields
         counts.addTypeSpace(t, ssDeltaNoReplication);
       }
     }
+    return counts;
+  }
+
+  /**
+   * Compute quota of striped file. Note that currently EC files do not support
+   * append/hflush/hsync, thus the file length recorded in snapshots should be
+   * the same with the current file length.
+   */
+  public final QuotaCounts computeQuotaUsageWithStriped(
+      BlockStoragePolicy bsp, QuotaCounts counts) {
+    counts.addNameSpace(1);
+    counts.add(storagespaceConsumed(bsp));
     return counts;
   }
 
@@ -683,22 +782,32 @@ public class INodeFile extends INodeWithAdditionalFields
    */
   public final long computeFileSize(boolean includesLastUcBlock,
       boolean usePreferredBlockSize4LastUcBlock) {
-    if (blocks == null || blocks.length == 0) {
+    BlockInfo[] blockInfos = getBlocks();
+    // In case of contiguous blocks
+    if (blockInfos == null || blockInfos.length == 0) {
       return 0;
     }
-    final int last = blocks.length - 1;
+    final int last = blockInfos.length - 1;
     //check if the last block is BlockInfoUnderConstruction
-    long size = blocks[last].getNumBytes();
-    if (blocks[last] instanceof BlockInfoUnderConstruction) {
+    BlockInfo lastBlk = blockInfos[last];
+    long size = lastBlk.getNumBytes();
+    if (lastBlk instanceof BlockInfoUnderConstruction) {
        if (!includesLastUcBlock) {
          size = 0;
        } else if (usePreferredBlockSize4LastUcBlock) {
-         size = getPreferredBlockSize();
+         // Striped blocks keeps block group which counts
+         // (data blocks num + parity blocks num). When you
+         // count actual used size by BlockInfoStripedUC must
+         // be multiplied by these blocks number.
+         size = isStriped()?
+             getPreferredBlockSize() *
+                 lastBlk.getStripedBlockStorageOp().getTotalBlockNum() :
+             getPreferredBlockSize();
        }
     }
     //sum other blocks
-    for(int i = 0; i < last; i++) {
-      size += blocks[i].getNumBytes();
+    for (int i = 0; i < last; i++) {
+      size += blockInfos[i].getNumBytes();
     }
     return size;
   }
@@ -709,6 +818,34 @@ public class INodeFile extends INodeWithAdditionalFields
    * Use preferred block size for the last block if it is under construction.
    */
   public final QuotaCounts storagespaceConsumed(BlockStoragePolicy bsp) {
+    if (isStriped()) {
+      return storagespaceConsumedStriped();
+    } else {
+      return storagespaceConsumedContiguous(bsp);
+    }
+  }
+
+  // TODO: support EC with heterogeneous storage
+  public final QuotaCounts storagespaceConsumedStriped() {
+    QuotaCounts counts = new QuotaCounts.Builder().build();
+    BlockInfo[] blks = getBlocks();
+    if (blks == null || blks.length == 0) {
+      return counts;
+    }
+
+    for (BlockInfo b : blks) {
+      Preconditions.checkState(b.isStriped());
+      StripedBlockStorageOp storageOp = b.getStripedBlockStorageOp();
+      long blockSize = b.isComplete() ?
+          storageOp.spaceConsumed() : getPreferredBlockSize() *
+          storageOp.getTotalBlockNum();
+      counts.addStorageSpace(blockSize);
+    }
+    return  counts;
+  }
+
+  public final QuotaCounts storagespaceConsumedContiguous(
+      BlockStoragePolicy bsp) {
     QuotaCounts counts = new QuotaCounts.Builder().build();
     final Iterable<BlockInfo> blocks;
     FileWithSnapshotFeature sf = getFileWithSnapshotFeature();
@@ -810,6 +947,7 @@ public class INodeFile extends INodeWithAdditionalFields
   /**
    * compute the quota usage change for a truncate op
    * @param newLength the length for truncation
+   * TODO: properly handle striped blocks (HDFS-7622)
    **/
   void computeQuotaDeltaForTruncate(
       long newLength, BlockStoragePolicy bsps,
@@ -863,6 +1001,15 @@ public class INodeFile extends INodeWithAdditionalFields
   }
 
   void truncateBlocksTo(int n) {
+    FileWithStripedBlocksFeature sb = getStripedBlocksFeature();
+    if (sb == null) {
+      truncateContiguousBlocks(n);
+    } else {
+      sb.truncateStripedBlocks(n);
+    }
+  }
+
+  private void truncateContiguousBlocks(int n) {
     final BlockInfo[] newBlocks;
     if (n == 0) {
       newBlocks = BlockInfo.EMPTY_ARRAY;
@@ -871,11 +1018,18 @@ public class INodeFile extends INodeWithAdditionalFields
       System.arraycopy(getBlocks(), 0, newBlocks, 0, n);
     }
     // set new blocks
-    setBlocks(newBlocks);
+    setContiguousBlocks(newBlocks);
   }
 
+  /**
+   * This function is only called when block list is stored in snapshot
+   * diffs. Note that this can only happen when truncation happens with
+   * snapshots. Since we do not support truncation with striped blocks,
+   * we only need to handle contiguous blocks here.
+   */
   public void collectBlocksBeyondSnapshot(BlockInfo[] snapshotBlocks,
                                           BlocksMapUpdateInfo collectedBlocks) {
+    Preconditions.checkState(!isStriped());
     BlockInfo[] oldBlocks = getBlocks();
     if(snapshotBlocks == null || oldBlocks == null)
       return;
@@ -931,6 +1085,6 @@ public class INodeFile extends INodeWithAdditionalFields
   @VisibleForTesting
   @Override
   public boolean isStriped() {
-    return false;
+    return getStripedBlocksFeature() != null;
   }
 }
