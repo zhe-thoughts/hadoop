@@ -36,6 +36,7 @@ import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.CorruptFileBlocks;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LastBlockWithStatus;
@@ -198,6 +199,7 @@ import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.GetEZForPathR
 import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.GetEZForPathRequestProto;
 import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.ListEncryptionZonesResponseProto;
 import org.apache.hadoop.hdfs.protocol.proto.EncryptionZonesProtos.ListEncryptionZonesRequestProto;
+import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeIDProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.DatanodeInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.LocatedBlockProto;
@@ -213,6 +215,7 @@ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.security.proto.SecurityProtos.CancelDelegationTokenRequestProto;
 import org.apache.hadoop.security.proto.SecurityProtos.CancelDelegationTokenResponseProto;
 import org.apache.hadoop.security.proto.SecurityProtos.GetDelegationTokenRequestProto;
@@ -1391,6 +1394,21 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
   }
 
   @Override
+  public ErasureCodingProtos.CreateErasureCodingZoneResponseProto createErasureCodingZone(
+      RpcController controller, ErasureCodingProtos.CreateErasureCodingZoneRequestProto req)
+      throws ServiceException {
+    try {
+      ECSchema schema = req.hasSchema() ? PBHelper.convertECSchema(req
+          .getSchema()) : null;
+      int cellSize = req.hasCellSize() ? req.getCellSize() : 0;
+      server.createErasureCodingZone(req.getSrc(), schema, cellSize);
+      return ErasureCodingProtos.CreateErasureCodingZoneResponseProto.newBuilder().build();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
   public SetXAttrResponseProto setXAttr(RpcController controller,
       SetXAttrRequestProto req) throws ServiceException {
     try {
@@ -1493,6 +1511,37 @@ public class ClientNamenodeProtocolServerSideTranslatorPB implements
     try {
       return PBHelper.convertEditsResponse(server.getEditsFromTxid(
           req.getTxid()));
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public ErasureCodingProtos.GetECSchemasResponseProto getECSchemas(RpcController controller,
+      ErasureCodingProtos.GetECSchemasRequestProto request) throws ServiceException {
+    try {
+      ECSchema[] ecSchemas = server.getECSchemas();
+      ErasureCodingProtos.GetECSchemasResponseProto.Builder resBuilder = ErasureCodingProtos.GetECSchemasResponseProto
+          .newBuilder();
+      for (ECSchema ecSchema : ecSchemas) {
+        resBuilder.addSchemas(PBHelper.convertECSchema(ecSchema));
+      }
+      return resBuilder.build();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  @Override
+  public ErasureCodingProtos.GetErasureCodingZoneResponseProto getErasureCodingZone(RpcController controller,
+      ErasureCodingProtos.GetErasureCodingZoneRequestProto request) throws ServiceException {
+    try {
+      ErasureCodingZone ecZone = server.getErasureCodingZone(request.getSrc());
+      ErasureCodingProtos.GetErasureCodingZoneResponseProto.Builder builder = ErasureCodingProtos.GetErasureCodingZoneResponseProto.newBuilder();
+      if (ecZone != null) {
+        builder.setECZone(PBHelper.convertErasureCodingZone(ecZone));
+      }
+      return builder.build();
     } catch (IOException e) {
       throw new ServiceException(e);
     }

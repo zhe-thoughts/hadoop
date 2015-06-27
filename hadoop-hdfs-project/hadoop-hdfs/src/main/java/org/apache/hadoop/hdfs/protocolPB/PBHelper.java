@@ -29,7 +29,10 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.fs.CacheFlag;
 import org.apache.hadoop.fs.ContentSummary;
@@ -70,6 +73,7 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo.AdminStates;
 import org.apache.hadoop.hdfs.protocol.DatanodeLocalInfo;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.hdfs.protocol.FsPermissionExtension;
@@ -125,6 +129,7 @@ import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.ReceivedDele
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.RegisterCommandProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.VolumeFailureSummaryProto;
 import org.apache.hadoop.hdfs.protocol.proto.DatanodeProtocolProtos.BlockReportContextProto;
+import org.apache.hadoop.hdfs.protocol.proto.ErasureCodingProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockKeyProto;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
@@ -223,6 +228,7 @@ import org.apache.hadoop.hdfs.shortcircuit.ShortCircuitShm.SlotId;
 import org.apache.hadoop.hdfs.util.ExactSizeInputStream;
 import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.security.proto.SecurityProtos.TokenProto;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.DataChecksum;
@@ -1429,11 +1435,11 @@ public class PBHelper {
     if (fs == null)
       return null;
     return new HdfsLocatedFileStatus(
-        fs.getLength(), fs.getFileType().equals(FileType.IS_DIR), 
+        fs.getLength(), fs.getFileType().equals(FileType.IS_DIR),
         fs.getBlockReplication(), fs.getBlocksize(),
         fs.getModificationTime(), fs.getAccessTime(),
-        PBHelper.convert(fs.getPermission()), fs.getOwner(), fs.getGroup(), 
-        fs.getFileType().equals(FileType.IS_SYMLINK) ? 
+        PBHelper.convert(fs.getPermission()), fs.getOwner(), fs.getGroup(),
+        fs.getFileType().equals(FileType.IS_SYMLINK) ?
             fs.getSymlink().toByteArray() : null,
         fs.getPath().toByteArray(),
         fs.hasFileId()? fs.getFileId(): HdfsConstants.GRANDFATHER_INODE_ID,
@@ -1441,7 +1447,9 @@ public class PBHelper {
         fs.hasChildrenNum() ? fs.getChildrenNum() : -1,
         fs.hasFileEncryptionInfo() ? convert(fs.getFileEncryptionInfo()) : null,
         fs.hasStoragePolicy() ? (byte) fs.getStoragePolicy()
-            : HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED);
+            : HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED,
+        fs.hasEcSchema() ? PBHelper.convertECSchema(fs.getEcSchema()) : null,
+        fs.hasStripeCellSize() ? fs.getStripeCellSize() : 0);
   }
 
   public static SnapshottableDirectoryStatus convert(
@@ -1463,7 +1471,7 @@ public class PBHelper {
         sdirStatusProto.getSnapshotQuota(),
         sdirStatusProto.getParentFullpath().toByteArray());
   }
-  
+
   public static HdfsFileStatusProto convert(HdfsFileStatus fs) {
     if (fs == null)
       return null;
@@ -1474,7 +1482,7 @@ public class PBHelper {
       fType = FileType.IS_SYMLINK;
     }
 
-    HdfsFileStatusProto.Builder builder = 
+    HdfsFileStatusProto.Builder builder =
      HdfsFileStatusProto.newBuilder().
       setLength(fs.getLen()).
       setFileType(fType).
@@ -3052,5 +3060,42 @@ public class PBHelper {
         setId(context.getReportId()).
         setLeaseId(context.getLeaseId()).
         build();
+  }
+
+  public static ECSchema convertECSchema(HdfsProtos.ECSchemaProto schema) {
+    List<HdfsProtos.ECSchemaOptionEntryProto> optionsList = schema.getOptionsList();
+    Map<String, String> options = new HashMap<>(optionsList.size());
+    for (HdfsProtos.ECSchemaOptionEntryProto option : optionsList) {
+      options.put(option.getKey(), option.getValue());
+    }
+    return new ECSchema(schema.getSchemaName(), schema.getCodecName(),
+        schema.getDataUnits(), schema.getParityUnits(), options);
+  }
+
+  public static HdfsProtos.ECSchemaProto convertECSchema(ECSchema schema) {
+    HdfsProtos.ECSchemaProto.Builder builder = HdfsProtos.ECSchemaProto.newBuilder()
+        .setSchemaName(schema.getSchemaName())
+        .setCodecName(schema.getCodecName())
+        .setDataUnits(schema.getNumDataUnits())
+        .setParityUnits(schema.getNumParityUnits());
+    Set<Map.Entry<String, String>> entrySet = schema.getExtraOptions().entrySet();
+    for (Map.Entry<String, String> entry : entrySet) {
+      builder.addOptions(HdfsProtos.ECSchemaOptionEntryProto.newBuilder()
+          .setKey(entry.getKey()).setValue(entry.getValue()).build());
+    }
+    return builder.build();
+  }
+
+  public static ErasureCodingProtos.ErasureCodingZoneProto convertErasureCodingZone(
+      ErasureCodingZone ecZone) {
+    return ErasureCodingProtos.ErasureCodingZoneProto.newBuilder().setDir(ecZone.getDir())
+        .setSchema(convertECSchema(ecZone.getSchema()))
+        .setCellSize(ecZone.getCellSize()).build();
+  }
+
+  public static ErasureCodingZone convertErasureCodingZone(
+      ErasureCodingProtos.ErasureCodingZoneProto ecZoneProto) {
+    return new ErasureCodingZone(ecZoneProto.getDir(),
+        convertECSchema(ecZoneProto.getSchema()), ecZoneProto.getCellSize());
   }
 }
