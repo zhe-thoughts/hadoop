@@ -1024,7 +1024,11 @@ implements ByteBufferReadable, CanSetDropBehind, CanSetReadahead,
         } catch (InterruptedException iex) {
         }
         deadNodes.clear(); //2nd option is to remove only nodes[blockId]
+<<<<<<< HEAD
         openInfo(true);
+=======
+        openInfo();
+>>>>>>> Client side support
         block = refreshLocatedBlock(block);
         failures++;
       }
@@ -1485,7 +1489,7 @@ implements ByteBufferReadable, CanSetDropBehind, CanSetReadahead,
       long targetStart = position - blk.getStartOffset();
       long bytesToRead = Math.min(remaining, blk.getBlockSize() - targetStart);
       try {
-        if (dfsClient.isHedgedReadsEnabled()) {
+        if (dfsClient.isHedgedReadsEnabled() && !blk.isStriped()) {
           hedgedFetchBlockByteRange(blk, targetStart,
               targetStart + bytesToRead - 1, buffer, offset, corruptedBlockMap);
         } else {
