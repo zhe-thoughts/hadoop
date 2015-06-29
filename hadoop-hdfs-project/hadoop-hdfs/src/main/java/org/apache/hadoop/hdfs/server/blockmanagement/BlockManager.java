@@ -83,6 +83,7 @@ import org.apache.hadoop.hdfs.server.protocol.BlockCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.BlockWithLocations;
+import org.apache.hadoop.hdfs.server.protocol.BlocksWithLocations.StripedBlockWithLocations;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
@@ -3446,9 +3447,25 @@ public class BlockManager implements BlockStatsMXBean {
         storageIDs[i] = s.getStorageID();
         storageTypes[i] = s.getStorageType();
       }
-      results.add(new BlockWithLocations(block, datanodeUuids, storageIDs,
-          storageTypes));
-      return block.getNumBytes();
+      BlockWithLocations blkWithLocs = new BlockWithLocations(block,
+          datanodeUuids, storageIDs, storageTypes);
+      if(block.isStriped()) {
+        BlockInfoStriped blockStriped = (BlockInfoStriped) block;
+        byte[] indices = new byte[locations.size()];
+        for (int i = 0; i < locations.size(); i++) {
+          indices[i] =
+              (byte) blockStriped.getStripedBlockStorageOp().
+                  getStorageBlockIndex(locations.get(i));
+        }
+        results.add(new StripedBlockWithLocations(blkWithLocs, indices,
+            blockStriped.getStripedBlockStorageOp().getDataBlockNum()));
+        // approximate size
+        return block.getNumBytes() /
+            blockStriped.getStripedBlockStorageOp().getDataBlockNum();
+      }else{
+        results.add(blkWithLocs);
+        return block.getNumBytes();
+      }
     }
   }
 

@@ -99,7 +99,7 @@ public class TestMover {
       final LocatedBlock lb = dfs.getClient().getLocatedBlocks(file, 0).get(0);
       final List<MLocation> locations = MLocation.toLocations(lb);
       final MLocation ml = locations.get(0);
-      final DBlock db = mover.newDBlock(lb.getBlock().getLocalBlock(), locations);
+      final DBlock db = mover.newDBlock(lb, locations, null);
 
       final List<StorageType> storageTypes = new ArrayList<StorageType>(
           Arrays.asList(StorageType.DEFAULT, StorageType.DEFAULT));
