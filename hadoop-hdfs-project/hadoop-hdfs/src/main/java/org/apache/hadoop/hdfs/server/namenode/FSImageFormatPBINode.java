@@ -44,7 +44,9 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
 import org.apache.hadoop.hdfs.protocolPB.PBHelper;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstructionContiguous;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstructionStriped;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.LoaderContext;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SaverContext;
@@ -57,6 +59,7 @@ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.XAttrCom
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.XAttrFeatureProto;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeEntryProto;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.QuotaByStorageTypeFeatureProto;
+import org.apache.hadoop.hdfs.server.namenode.FsImageProto.INodeSection.StripedBlocksFeature;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
@@ -68,6 +71,7 @@ import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.protobuf.ByteString;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 
 @InterfaceAudience.Private
 public final class FSImageFormatPBINode {
@@ -218,7 +222,7 @@ public final class FSImageFormatPBINode {
       final BlockInfo[] blocks = file.getBlocks();
       if (blocks != null) {
         for (int i = 0; i < blocks.length; i++) {
-          file.setBlock(i, bm.addBlockCollection(blocks[i], file));
+          file.setBlock(i, bm.addBlockCollectionWithCheck(blocks[i], file));
         }
       }
     }
@@ -334,9 +338,11 @@ public final class FSImageFormatPBINode {
       LoaderContext state = parent.getLoaderContext();
 
       BlockInfo[] blocks = new BlockInfo[bp.size()];
-      for (int i = 0, e = bp.size(); i < e; ++i) {
-        blocks[i] =
-            new BlockInfoContiguous(PBHelper.convert(bp.get(i)), replication);
+      if (!f.hasStripedBlocks()) {
+        blocks = new BlockInfoContiguous[bp.size()];
+        for (int i = 0, e = bp.size(); i < e; ++i) {
+          blocks[i] = new BlockInfoContiguous(PBHelper.convert(bp.get(i)), replication);
+        }
       }
       final PermissionStatus permissions = loadPermission(f.getPermission(),
           parent.getLoaderContext().getStringTable());
@@ -357,15 +363,39 @@ public final class FSImageFormatPBINode {
             loadXAttrs(f.getXAttrs(), state.getStringTable())));
       }
 
+      FileWithStripedBlocksFeature stripeFeature = null;
+      if (f.hasStripedBlocks()) {
+        // TODO: HDFS-7859
+        ECSchema schema = ErasureCodingSchemaManager.getSystemDefaultSchema();
+        stripeFeature = file.addStripedBlocksFeature();
+        if (bp.size() > 0) {
+          // if a striped file has block, the cellSize must exist in proto
+          final int cellSize = f.getStripedBlocks().getCellSize();
+          for (BlockProto b : bp) {
+            stripeFeature.addBlock(new BlockInfoStriped(PBHelper.convert(b),
+                schema, cellSize));
+          }
+        }
+      }
+
       // under-construction information
       if (f.hasFileUC()) {
         INodeSection.FileUnderConstructionFeature uc = f.getFileUC();
         file.toUnderConstruction(uc.getClientName(), uc.getClientMachine());
-        if (blocks.length > 0) {
-          BlockInfo lastBlk = file.getLastBlock();
+        BlockInfo lastBlk = file.getLastBlock();
+        if (lastBlk != null) {
           // replace the last block of file
-          file.setBlock(file.numBlocks() - 1,
-              new BlockInfoUnderConstructionContiguous(lastBlk, replication));
+          final BlockInfo ucBlk;
+          if (stripeFeature != null) {
+            BlockInfoStriped striped = (BlockInfoStriped) lastBlk;
+            ucBlk = new BlockInfoUnderConstructionStriped(striped,
+                striped.getStripedBlockStorageOp().getSchema(),
+                striped.getStripedBlockStorageOp().getCellSize());
+          } else {
+            ucBlk = new BlockInfoUnderConstructionContiguous(lastBlk,
+                replication);
+          }
+          file.setBlock(file.numBlocks() - 1, ucBlk);
         }
       }
       return file;
@@ -634,10 +664,29 @@ public final class FSImageFormatPBINode {
       INodeSection.INodeFile.Builder b = buildINodeFile(n,
           parent.getSaverContext());
 
-      if (n.getBlocks() != null) {
-        for (Block block : n.getBlocks()) {
+      BlockInfo[] cBlks = n.getContiguousBlocks();
+      if (cBlks != null) {
+        for (Block block : cBlks) {
           b.addBlocks(PBHelper.convert(block));
         }
+      }
+
+      FileWithStripedBlocksFeature sb = n.getStripedBlocksFeature();
+      if (sb != null) {
+        StripedBlocksFeature.Builder builder =
+            StripedBlocksFeature.newBuilder();
+        BlockInfo[] sblocks = sb.getBlocks();
+        if (sblocks != null && sblocks.length > 0) {
+          final int cellSize =
+              sblocks[0].getStripedBlockStorageOp().getCellSize();
+          for (BlockInfo sblk : sblocks) {
+            assert cellSize ==
+                sblk.getStripedBlockStorageOp().getCellSize();
+            b.addBlocks(PBHelper.convert(sblk));
+          }
+          builder.setCellSize(cellSize);
+        }
+        b.setStripedBlocks(builder.build());
       }
 
       FileUnderConstructionFeature uc = n.getFileUnderConstructionFeature();
