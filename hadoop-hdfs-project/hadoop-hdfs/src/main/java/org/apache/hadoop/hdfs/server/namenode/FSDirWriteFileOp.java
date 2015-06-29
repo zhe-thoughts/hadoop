@@ -171,6 +171,7 @@ class FSDirWriteFileOp {
     final int replication;
     final byte storagePolicyID;
     String clientMachine;
+    final boolean isStriped;
 
     byte[][] pathComponents = FSDirectory.getPathComponentsForReservedPath(src);
     src = fsn.dir.resolvePath(pc, src, pathComponents);
@@ -196,10 +197,11 @@ class FSDirWriteFileOp {
     blockSize = pendingFile.getPreferredBlockSize();
     clientMachine = pendingFile.getFileUnderConstructionFeature()
         .getClientMachine();
+    isStriped = false;
     replication = pendingFile.getFileReplication();
     storagePolicyID = pendingFile.getStoragePolicyID();
     return new ValidateAddBlockResult(blockSize, replication, storagePolicyID,
-                                    clientMachine);
+                                    clientMachine, isStriped);
   }
 
   static LocatedBlock makeLocatedBlock(FSNamesystem fsn, Block blk,
@@ -280,7 +282,8 @@ class FSDirWriteFileOp {
     // choose targets for the new block to be allocated.
     return bm.chooseTarget4NewBlock(src, r.replication, clientNode,
                                     excludedNodesSet, r.blockSize,
-                                    favoredNodesList, r.storagePolicyID);
+                                    favoredNodesList, r.storagePolicyID,
+                                    r.isStriped);
   }
 
   /**
@@ -856,14 +859,16 @@ class FSDirWriteFileOp {
     final int replication;
     final byte storagePolicyID;
     final String clientMachine;
+    final boolean isStriped;
 
     ValidateAddBlockResult(
         long blockSize, int replication, byte storagePolicyID,
-        String clientMachine) {
+        String clientMachine, boolean isStriped) {
       this.blockSize = blockSize;
       this.replication = replication;
       this.storagePolicyID = storagePolicyID;
       this.clientMachine = clientMachine;
+      this.isStriped = isStriped;
     }
   }
 
