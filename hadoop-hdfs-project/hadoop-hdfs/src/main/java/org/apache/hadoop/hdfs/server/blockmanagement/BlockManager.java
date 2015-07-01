@@ -277,7 +277,7 @@ public class BlockManager implements BlockStatsMXBean {
   private double replicationQueuesInitProgress = 0.0;
 
   /** for block replicas placement */
-  private BlockPlacementPolicy blockplacement;
+  private BlockPlacementPolicies placementPolicies;
   private final BlockStoragePolicySuite storagePolicySuite;
 
   /** Check whether name system is running before terminating */
@@ -301,7 +301,7 @@ public class BlockManager implements BlockStatsMXBean {
     // Compute the map capacity by allocating 2% of total memory
     blocksMap = new BlocksMap(
         LightWeightGSet.computeCapacity(2.0, "BlocksMap"));
-    blockplacement = BlockPlacementPolicy.getInstance(
+    placementPolicies = new BlockPlacementPolicies(
       conf, datanodeManager.getFSClusterStats(),
       datanodeManager.getNetworkTopology(),
       datanodeManager.getHost2DatanodeMap());
@@ -503,15 +503,7 @@ public class BlockManager implements BlockStatsMXBean {
 
   @VisibleForTesting
   public BlockPlacementPolicy getBlockPlacementPolicy() {
-    return blockplacement;
-  }
-
-  /** Set BlockPlacementPolicy */
-  public void setBlockPlacementPolicy(BlockPlacementPolicy newpolicy) {
-    if (newpolicy == null) {
-      throw new HadoopIllegalArgumentException("newpolicy == null");
-    }
-    this.blockplacement = newpolicy;
+    return placementPolicies.getPolicy(false);
   }
 
   /** Dump meta data to out. */
@@ -1484,7 +1476,9 @@ public class BlockManager implements BlockStatsMXBean {
       // choose replication targets: NOT HOLDING THE GLOBAL LOCK
       // It is costly to extract the filename for which chooseTargets is called,
       // so for now we pass in the block collection itself.
-      rw.chooseTargets(blockplacement, storagePolicySuite, excludedNodes);
+      final BlockPlacementPolicy placementPolicy =
+          placementPolicies.getPolicy(rw.block.isStriped());
+      rw.chooseTargets(placementPolicy, storagePolicySuite, excludedNodes);
     }
 
     namesystem.writeLock();
@@ -1584,7 +1578,7 @@ public class BlockManager implements BlockStatsMXBean {
   /** Choose target for WebHDFS redirection. */
   public DatanodeStorageInfo[] chooseTarget4WebHDFS(String src,
       DatanodeDescriptor clientnode, Set<Node> excludes, long blocksize) {
-    return blockplacement.chooseTarget(src, 1, clientnode,
+    return placementPolicies.getPolicy(false).chooseTarget(src, 1, clientnode,
         Collections.<DatanodeStorageInfo>emptyList(), false, excludes,
         blocksize, storagePolicySuite.getDefaultPolicy());
   }
@@ -1596,9 +1590,11 @@ public class BlockManager implements BlockStatsMXBean {
       List<DatanodeStorageInfo> chosen,
       Set<Node> excludes,
       long blocksize,
-      byte storagePolicyID) {
+      byte storagePolicyID,
+      boolean isStriped) {
     
     final BlockStoragePolicy storagePolicy = storagePolicySuite.getPolicy(storagePolicyID);
+    final BlockPlacementPolicy blockplacement = placementPolicies.getPolicy(isStriped);
     return blockplacement.chooseTarget(src, numAdditionalNodes, clientnode,
         chosen, true, excludes, blocksize, storagePolicy);
   }
@@ -1616,10 +1612,12 @@ public class BlockManager implements BlockStatsMXBean {
       final Set<Node> excludedNodes,
       final long blocksize,
       final List<String> favoredNodes,
-      final byte storagePolicyID) throws IOException {
+      final byte storagePolicyID,
+      final boolean isStriped) throws IOException {
     List<DatanodeDescriptor> favoredDatanodeDescriptors = 
         getDatanodeDescriptors(favoredNodes);
     final BlockStoragePolicy storagePolicy = storagePolicySuite.getPolicy(storagePolicyID);
+    final BlockPlacementPolicy blockplacement = placementPolicies.getPolicy(isStriped);
     final DatanodeStorageInfo[] targets = blockplacement.chooseTarget(src,
         numOfReplicas, client, excludedNodes, blocksize, 
         favoredDatanodeDescriptors, storagePolicy);
@@ -3077,7 +3075,7 @@ public class BlockManager implements BlockStatsMXBean {
       }
     }
     chooseExcessReplicates(nonExcess, block, replication,
-        addedNode, delNodeHint, blockplacement);
+        addedNode, delNodeHint);
   }
 
 
@@ -3099,8 +3097,7 @@ public class BlockManager implements BlockStatsMXBean {
       final Collection<DatanodeStorageInfo> nonExcess,
       BlockInfo storedBlock, short replication,
       DatanodeDescriptor addedNode,
-      DatanodeDescriptor delNodeHint,
-      BlockPlacementPolicy replicator) {
+      DatanodeDescriptor delNodeHint) {
     assert namesystem.hasWriteLock();
     // first form a rack to datanodes map and
     BlockCollection bc = getBlockCollection(storedBlock);
@@ -3111,10 +3108,10 @@ public class BlockManager implements BlockStatsMXBean {
 
     if (!storedBlock.isStriped()) {
       chooseExcessReplicasContiguous(bc, nonExcess, storedBlock,
-          replication, addedNode, delNodeHint, excessTypes, replicator);
+          replication, addedNode, delNodeHint, excessTypes);
     } else {
       chooseExcessReplicasStriped(bc, nonExcess, storedBlock, delNodeHint,
-          excessTypes, replicator);
+          excessTypes);
     }
   }
 
@@ -3123,8 +3120,8 @@ public class BlockManager implements BlockStatsMXBean {
       BlockInfo storedBlock, short replication,
       DatanodeDescriptor addedNode,
       DatanodeDescriptor delNodeHint,
-      List<StorageType> excessTypes,
-      BlockPlacementPolicy replicator) {
+      List<StorageType> excessTypes) {
+    BlockPlacementPolicy replicator = placementPolicies.getPolicy(false);
     final Map<String, List<DatanodeStorageInfo>> rackMap = new HashMap<>();
     final List<DatanodeStorageInfo> moreThanOne = new ArrayList<>();
     final List<DatanodeStorageInfo> exactlyOne = new ArrayList<>();
@@ -3173,14 +3170,14 @@ public class BlockManager implements BlockStatsMXBean {
       final Collection<DatanodeStorageInfo> nonExcess,
       BlockInfo storedBlock,
       DatanodeDescriptor delNodeHint,
-      List<StorageType> excessTypes,
-      BlockPlacementPolicy replicator) {
+      List<StorageType> excessTypes) {
     assert storedBlock instanceof BlockInfoStriped;
     BlockInfoStriped sblk = (BlockInfoStriped) storedBlock;
     short groupSize = sblk.getStripedBlockStorageOp().getTotalBlockNum();
     if (nonExcess.size() <= groupSize) {
       return;
     }
+    BlockPlacementPolicy placementPolicy = placementPolicies.getPolicy(true);
     List<DatanodeStorageInfo> empty = new ArrayList<>(0);
 
     // find all duplicated indices
@@ -3221,7 +3218,7 @@ public class BlockManager implements BlockStatsMXBean {
       Block internalBlock = new Block(storedBlock);
       internalBlock.setBlockId(storedBlock.getBlockId() + targetIndex);
       while (candidates.size() > 1) {
-        DatanodeStorageInfo target = replicator.chooseReplicaToDelete(bc,
+        DatanodeStorageInfo target = placementPolicy.chooseReplicaToDelete(bc,
             internalBlock, (short)1, candidates, empty, excessTypes);
         processChosenExcessReplica(nonExcess, target, storedBlock);
         candidates.remove(target);

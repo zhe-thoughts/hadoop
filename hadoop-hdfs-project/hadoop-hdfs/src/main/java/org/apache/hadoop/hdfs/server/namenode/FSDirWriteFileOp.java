@@ -280,7 +280,8 @@ class FSDirWriteFileOp {
     // choose targets for the new block to be allocated.
     return bm.chooseTarget4NewBlock(src, r.replication, clientNode,
                                     excludedNodesSet, r.blockSize,
-                                    favoredNodesList, r.storagePolicyID);
+                                    favoredNodesList, r.storagePolicyID,
+                                    false);
   }
 
   /**
