@@ -315,6 +315,10 @@ public abstract class  BlockInfo extends Block
     return getBlockUCState().equals(BlockUCState.COMPLETE);
   }
 
+  public abstract boolean isStriped();
+
+  public abstract StripedBlockStorageOp getStripedBlockStorageOp();
+
   /**
    * Convert a block to an under construction block.
    * @return BlockInfoUnderConstruction -  an under construction block.
