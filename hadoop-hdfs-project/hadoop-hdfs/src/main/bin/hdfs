@@ -29,6 +29,7 @@ function hadoop_usage
   echo "  debug                run a Debug Admin to execute HDFS debug commands"
   echo "  dfs                  run a filesystem command on the file system"
   echo "  dfsadmin             run a DFS admin client"
+  echo "  erasurecode          configure HDFS erasure coding zones"
   echo "  fetchdt              fetch a delegation token from the NameNode"
   echo "  fsck                 run a DFS filesystem checking utility"
   echo "  getconf              get config values from configuration"
@@ -132,6 +133,11 @@ case ${COMMAND} in
   ;;
   dfsadmin)
     CLASS=org.apache.hadoop.hdfs.tools.DFSAdmin
+    hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
+    HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
+  ;;
+  erasurecode)
+    CLASS=org.apache.hadoop.hdfs.tools.erasurecode.ECCli
     hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
     HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
   ;;
