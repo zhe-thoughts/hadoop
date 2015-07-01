@@ -118,6 +118,7 @@ import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.EncryptionZoneIterator;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
@@ -163,6 +164,7 @@ import org.apache.hadoop.io.EnumSetWritable;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.io.retry.LossyRetryInvocationHandler;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RemoteException;
@@ -3243,4 +3245,51 @@ public class DFSClient implements java.io.Closeable, RemotePeerFactory,
     }
     return scope;
   }
+
+  public ECSchema[] getECSchemas() throws IOException {
+    checkOpen();
+    TraceScope scope = Trace.startSpan("getECSchemas", traceSampler);
+    try {
+      return namenode.getECSchemas();
+    } finally {
+      scope.close();
+    }
+  }
+
+  /**
+   * Get the erasure coding zone information for the specified path
+   *
+   * @param src path to get the information for
+   * @return Returns the zone information if path is in EC Zone, null otherwise
+   * @throws IOException
+   */
+  public ErasureCodingZone getErasureCodingZone(String src) throws IOException {
+    checkOpen();
+    TraceScope scope = getPathTraceScope("getErasureCodingZone", src);
+    try {
+      return namenode.getErasureCodingZone(src);
+    } catch (RemoteException re) {
+      throw re.unwrapRemoteException(FileNotFoundException.class,
+          AccessControlException.class, UnresolvedPathException.class);
+    } finally {
+      scope.close();
+    }
+  }
+
+  public void createErasureCodingZone(String src, ECSchema schema, int cellSize)
+      throws IOException {
+    checkOpen();
+    TraceScope scope = getPathTraceScope("createErasureCodingZone", src);
+    try {
+      namenode.createErasureCodingZone(src, schema, cellSize);
+    } catch (RemoteException re) {
+      throw re.unwrapRemoteException(AccessControlException.class,
+          SafeModeException.class,
+          UnresolvedPathException.class);
+    } finally {
+      scope.close();
+    }
+  }
+
+
 }
