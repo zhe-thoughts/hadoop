@@ -88,6 +88,14 @@ public class BlockInfoUnderConstructionContiguous extends
     ContiguousBlockStorageOp.replaceBlock(this, newBlock);
   }
 
+  public boolean isStriped() {
+    return false;
+  }
+
+  public StripedBlockStorageOp getStripedBlockStorageOp() {
+    return null;
+  }
+
   @Override
   public void setExpectedLocations(DatanodeStorageInfo[] targets) {
     int numLocations = targets == null ? 0 : targets.length;

@@ -398,4 +398,7 @@ public interface HdfsServerConstants {
       "security.hdfs.unreadable.by.superuser";
   String XATTR_ERASURECODING_ZONE =
       "raw.hdfs.erasurecoding.zone";
+
+  long BLOCK_GROUP_INDEX_MASK = 15;
+  byte MAX_BLOCKS_IN_GROUP = 16;
 }

@@ -219,9 +219,6 @@ public abstract class  BlockInfo extends Block
       if (cur == storageInfo) {
         return idx;
       }
-      if (cur == null) {
-        break;
-      }
     }
     return -1;
   }
@@ -314,6 +311,10 @@ public abstract class  BlockInfo extends Block
   public boolean isComplete() {
     return getBlockUCState().equals(BlockUCState.COMPLETE);
   }
+
+  public abstract boolean isStriped();
+
+  public abstract StripedBlockStorageOp getStripedBlockStorageOp();
 
   /**
    * Convert a block to an under construction block.
