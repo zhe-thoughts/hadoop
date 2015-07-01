@@ -57,10 +57,12 @@ import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs.BlockReportReplica;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
+import org.apache.hadoop.hdfs.protocol.LocatedStripedBlock;
 import org.apache.hadoop.hdfs.protocol.UnregisteredNodeException;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
@@ -89,6 +91,7 @@ import org.apache.hadoop.hdfs.server.protocol.KeyUpdateCommand;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo;
 import org.apache.hadoop.hdfs.server.protocol.StorageReceivedDeletedBlocks;
 import org.apache.hadoop.hdfs.util.LightWeightLinkedSet;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -889,7 +892,11 @@ public class BlockManager implements BlockStatsMXBean {
       final DatanodeStorageInfo[] storages = uc.getExpectedStorageLocations();
       final ExtendedBlock eb =
           new ExtendedBlock(namesystem.getBlockPoolId(), blk);
-      return newLocatedBlock(eb, storages, pos, false);
+      return blk.isStriped() ?
+          newLocatedStripedBlock(eb, storages,
+              ((BlockInfoUnderConstructionStriped)uc).getBlockIndices(),
+              pos, false) :
+          newLocatedBlock(eb, storages, pos, false);
     }
 
     // get block locations
@@ -906,24 +913,34 @@ public class BlockManager implements BlockStatsMXBean {
         numCorruptNodes == numNodes;
     final int numMachines = isCorrupt ? numNodes: numNodes - numCorruptNodes;
     final DatanodeStorageInfo[] machines = new DatanodeStorageInfo[numMachines];
-    int j = 0;
+    final int[] blockIndices = blk.isStriped() ? new int[numMachines] : null;
+    int j = 0, i = 0;
     if (numMachines > 0) {
       for(DatanodeStorageInfo storage : getStorages(blk)) {
         final DatanodeDescriptor d = storage.getDatanodeDescriptor();
         final boolean replicaCorrupt = corruptReplicas.isReplicaCorrupt(blk, d);
         if (isCorrupt || (!replicaCorrupt)) {
           machines[j++] = storage;
+          // TODO this can be more efficient
+          if (blockIndices != null) {
+            Preconditions.checkNotNull(blk.getStripedBlockStorageOp());
+            int index = blk.getStripedBlockStorageOp().getStorageBlockIndex(storage);
+            assert index >= 0;
+            blockIndices[i++] = index;
+          }
         }
       }
     }
     assert j == machines.length :
-      "isCorrupt: " + isCorrupt + 
+      "isCorrupt: " + isCorrupt +
       " numMachines: " + numMachines +
       " numNodes: " + numNodes +
       " numCorrupt: " + numCorruptNodes +
       " numCorruptRepls: " + numCorruptReplicas;
     final ExtendedBlock eb = new ExtendedBlock(namesystem.getBlockPoolId(), blk);
-    return newLocatedBlock(eb, machines, pos, isCorrupt);
+    return blockIndices == null ?
+        newLocatedBlock(eb, machines, pos, isCorrupt) :
+        newLocatedStripedBlock(eb, machines, blockIndices, pos, isCorrupt);
   }
 
   /** Create a LocatedBlocks. */
@@ -931,14 +948,18 @@ public class BlockManager implements BlockStatsMXBean {
       final long fileSizeExcludeBlocksUnderConstruction,
       final boolean isFileUnderConstruction, final long offset,
       final long length, final boolean needBlockToken,
-      final boolean inSnapshot, FileEncryptionInfo feInfo)
+      final boolean inSnapshot, FileEncryptionInfo feInfo,
+      ErasureCodingZone ecZone)
       throws IOException {
     assert namesystem.hasReadLock();
+    final ECSchema schema = ecZone != null ? ecZone.getSchema() : null;
+    final int cellSize = ecZone != null ? ecZone.getCellSize() : 0;
     if (blocks == null) {
       return null;
     } else if (blocks.length == 0) {
       return new LocatedBlocks(0, isFileUnderConstruction,
-          Collections.<LocatedBlock>emptyList(), null, false, feInfo);
+          Collections.<LocatedBlock>emptyList(), null, false, feInfo, schema,
+          cellSize);
     } else {
       if (LOG.isDebugEnabled()) {
         LOG.debug("blocks = " + java.util.Arrays.asList(blocks));
@@ -961,9 +982,9 @@ public class BlockManager implements BlockStatsMXBean {
             fileSizeExcludeBlocksUnderConstruction, mode);
         isComplete = true;
       }
-      return new LocatedBlocks(
-          fileSizeExcludeBlocksUnderConstruction, isFileUnderConstruction,
-          locatedblocks, lastlb, isComplete, feInfo);
+      return new LocatedBlocks(fileSizeExcludeBlocksUnderConstruction,
+          isFileUnderConstruction, locatedblocks, lastlb, isComplete, feInfo,
+          schema, cellSize);
     }
   }
 
@@ -4038,6 +4059,19 @@ public class BlockManager implements BlockStatsMXBean {
     postponedMisreplicatedBlocksCount.set(0);
   };
 
+  public static LocatedBlock newLocatedBlock(ExtendedBlock eb, BlockInfo info,
+      DatanodeStorageInfo[] locs, long offset) throws IOException {
+    final LocatedBlock lb;
+    if (info.isStriped()) {
+      lb = newLocatedStripedBlock(eb, locs,
+          ((BlockInfoUnderConstructionStriped)info).getBlockIndices(),
+          offset, false);
+    } else {
+      lb = newLocatedBlock(eb, locs, offset, false);
+    }
+    return lb;
+  }
+
   public static LocatedBlock newLocatedBlock(
       ExtendedBlock b, DatanodeStorageInfo[] storages,
       long startOffset, boolean corrupt) {
@@ -4047,6 +4081,18 @@ public class BlockManager implements BlockStatsMXBean {
         DatanodeStorageInfo.toStorageIDs(storages),
         DatanodeStorageInfo.toStorageTypes(storages),
         startOffset, corrupt,
+        null);
+  }
+
+  public static LocatedStripedBlock newLocatedStripedBlock(
+      ExtendedBlock b, DatanodeStorageInfo[] storages,
+      int[] indices, long startOffset, boolean corrupt) {
+    // startOffset is unknown
+    return new LocatedStripedBlock(
+        b, DatanodeStorageInfo.toDatanodeInfos(storages),
+        DatanodeStorageInfo.toStorageIDs(storages),
+        DatanodeStorageInfo.toStorageTypes(storages),
+        indices, startOffset, corrupt,
         null);
   }
 

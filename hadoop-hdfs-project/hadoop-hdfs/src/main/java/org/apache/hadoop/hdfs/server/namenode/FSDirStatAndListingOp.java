@@ -185,9 +185,12 @@ class FSDirStatAndListingOp {
       final FileEncryptionInfo feInfo = isReservedName ? null
           : fsd.getFileEncryptionInfo(inode, iip.getPathSnapshotId(), iip);
 
+      final ErasureCodingZone ecZone = FSDirErasureCodingOp.getErasureCodingZone(
+          fsd.getFSNamesystem(), iip);
+
       final LocatedBlocks blocks = bm.createLocatedBlocks(
           inode.getBlocks(iip.getPathSnapshotId()), fileSize, isUc, offset,
-          length, needBlockToken, iip.isSnapshot(), feInfo);
+          length, needBlockToken, iip.isSnapshot(), feInfo, ecZone);
 
       // Set caching information for the located blocks.
       for (LocatedBlock lb : blocks.getLocatedBlocks()) {
@@ -507,6 +510,8 @@ class FSDirStatAndListingOp {
     final boolean isEncrypted;
     final FileEncryptionInfo feInfo = isRawPath ? null :
         fsd.getFileEncryptionInfo(node, snapshot, iip);
+    final ErasureCodingZone ecZone = FSDirErasureCodingOp.getErasureCodingZone(
+        fsd.getFSNamesystem(), iip);
     if (node.isFile()) {
       final INodeFile fileNode = node.asFile();
       size = fileNode.computeFileSize(snapshot);
@@ -520,7 +525,7 @@ class FSDirStatAndListingOp {
 
       loc = fsd.getFSNamesystem().getBlockManager().createLocatedBlocks(
           fileNode.getBlocks(snapshot), fileSize, isUc, 0L, size, false,
-          inSnapshot, feInfo);
+          inSnapshot, feInfo, ecZone);
       if (loc == null) {
         loc = new LocatedBlocks();
       }
@@ -531,8 +536,6 @@ class FSDirStatAndListingOp {
     }
     int childrenNum = node.isDirectory() ?
         node.asDirectory().getChildrenNum(snapshot) : 0;
-    final ErasureCodingZone ecZone = FSDirErasureCodingOp.getErasureCodingZone(
-        fsd.getFSNamesystem(), iip);
     final ECSchema schema = ecZone != null ? ecZone.getSchema() : null;
     final int cellSize = ecZone != null ? ecZone.getCellSize() : 0;
 

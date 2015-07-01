@@ -220,6 +220,7 @@ message LocatedBlockProto {
   repeated bool isCached = 6 [packed=true]; // if a location in locs is cached
   repeated StorageTypeProto storageTypes = 7;
   repeated string storageIDs = 8;
+  repeated uint32 blockIndex = 9; // used for striped block to indicate block index for each storage
 }
 
 message DataEncryptionKeyProto {
@@ -300,6 +301,10 @@ message LocatedBlocksProto {
   optional LocatedBlockProto lastBlock = 4;
   required bool isLastBlockComplete = 5;
   optional FileEncryptionInfoProto fileEncryptionInfo = 6;
+
+  // Optional field for erasure coding
+  optional ECSchemaProto eCSchema = 7;
+  optional uint32 stripeCellSize = 8;
 }
 
 /**
