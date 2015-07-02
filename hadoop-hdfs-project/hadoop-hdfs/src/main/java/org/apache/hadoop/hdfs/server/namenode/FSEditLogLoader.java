@@ -980,7 +980,7 @@ public class FSEditLogLoader {
     // add the new block
     BlockInfo newBI = new BlockInfoUnderConstructionContiguous(
           newBlock, file.getPreferredBlockReplication());
-    fsNamesys.getBlockManager().addBlockCollection(newBI, file);
+    fsNamesys.getBlockManager().addBlockCollectionWithCheck(newBI, file);
     file.addBlock(newBI);
     fsNamesys.getBlockManager().processQueuedMessagesForBlock(newBlock);
   }
@@ -1068,7 +1068,7 @@ public class FSEditLogLoader {
           newBI = new BlockInfoContiguous(newBlock,
               file.getPreferredBlockReplication());
         }
-        fsNamesys.getBlockManager().addBlockCollection(newBI, file);
+        fsNamesys.getBlockManager().addBlockCollectionWithCheck(newBI, file);
         file.addBlock(newBI);
         fsNamesys.getBlockManager().processQueuedMessagesForBlock(newBlock);
       }
