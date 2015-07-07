@@ -55,3 +55,17 @@ message GetErasureCodingZoneRequestProto {
 message GetErasureCodingZoneResponseProto {
   optional ErasureCodingZoneProto ECZone = 1;
 }
+
+/**
+ * Block erasure coding recovery info
+ */
+message BlockECRecoveryInfoProto {
+  required ExtendedBlockProto block = 1;
+  required DatanodeInfosProto sourceDnInfos = 2;
+  required DatanodeInfosProto targetDnInfos = 3;
+  required StorageUuidsProto targetStorageUuids = 4;
+  required StorageTypesProto targetStorageTypes = 5;
+  repeated uint32 liveBlockIndices = 6;
+  required ECSchemaProto ecSchema = 7;
+  required uint32 cellSize = 8;
+}
