@@ -29,7 +29,7 @@ import org.apache.hadoop.util.LightWeightGSet;
  * where the replicas of the block, or blocks belonging to the erasure coding
  * block group, are stored.
  */
-public abstract class  BlockInfo extends Block
+public abstract class BlockInfo extends Block
     implements LightWeightGSet.LinkedElement {
   public static final BlockInfo[] EMPTY_ARRAY = {};
 

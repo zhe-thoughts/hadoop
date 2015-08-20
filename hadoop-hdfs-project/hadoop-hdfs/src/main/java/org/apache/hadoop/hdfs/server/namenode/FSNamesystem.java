@@ -3775,8 +3775,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
         while (it.hasNext()) {
           Block b = it.next();
           BlockInfo blockInfo = getStoredBlock(b);
-          if (blockInfo.getBlockCollection().getStoragePolicyID() ==
-              lpPolicy.getId()) {
+          if (blockInfo.getBlockCollection().getStoragePolicyID()
+              == lpPolicy.getId()) {
             filesToDelete.add(blockInfo.getBlockCollection());
           }
         }
