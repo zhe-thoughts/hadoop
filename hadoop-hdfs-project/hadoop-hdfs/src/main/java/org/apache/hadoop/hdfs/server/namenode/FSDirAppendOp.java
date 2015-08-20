@@ -110,7 +110,7 @@ final class FSDirAppendOp {
       // not support appending file with striped blocks
       if (file.isStriped()) {
         throw new UnsupportedOperationException(
-            "Cannot truncate file with striped block " + src);
+            "Cannot append to files with striped block " + src);
       }
 
       BlockManager blockManager = fsd.getBlockManager();

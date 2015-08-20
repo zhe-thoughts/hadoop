@@ -153,7 +153,7 @@ public class TestStripedINodeFile {
   }
 
   @Test
-  public void testBlockUCStripedFileSize()
+  public void testBlockStripedUCFileSize()
       throws IOException, InterruptedException {
     INodeFile inf = createStripedINodeFile();
     Block blk = new Block(1);
@@ -187,7 +187,7 @@ public class TestStripedINodeFile {
   }
 
   @Test
-  public void testBlockUCStripedComputeQuotaUsage()
+  public void testBlockStripedUCComputeQuotaUsage()
       throws IOException, InterruptedException {
     INodeFile inf = createStripedINodeFile();
     Block blk = new Block(1);
@@ -201,7 +201,7 @@ public class TestStripedINodeFile {
               new QuotaCounts.Builder().build());
     assertEquals(1024, inf.getPreferredBlockSize());
     assertEquals(1, counts.getNameSpace());
-    // Consumed space in the case of BlockInfoUCStriped can be calculated
+    // Consumed space in the case of BlockInfoStripedUC can be calculated
     // by using preferred block size. This is 1024 and total block num
     // is 9(= 3 + 6). Consumed storage space should be 1024 * 9 = 9216.
     assertEquals(9216, counts.getStorageSpace());

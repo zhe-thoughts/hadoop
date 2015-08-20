@@ -1482,14 +1482,14 @@ public interface ClientProtocol {
    * transactions for txids equal to or greater than txid.
    */
   @Idempotent
-  public EventBatchList getEditsFromTxid(long txid) throws IOException;
+  EventBatchList getEditsFromTxid(long txid) throws IOException;
 
   /**
    * Create an erasure coding zone with specified policy, if any, otherwise
    * default
    */
   @AtMostOnce
-  public void createErasureCodingZone(String src, ErasureCodingPolicy ecPolicy)
+  void createErasureCodingZone(String src, ErasureCodingPolicy ecPolicy)
       throws IOException;
 
   /**
@@ -1498,7 +1498,7 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
-  public ErasureCodingPolicy[] getErasureCodingPolicies() throws IOException;
+  ErasureCodingPolicy[] getErasureCodingPolicies() throws IOException;
 
   /**
    * Get the information about the EC zone for the path
@@ -1507,5 +1507,5 @@ public interface ClientProtocol {
    * @throws IOException
    */
   @Idempotent
-  public ErasureCodingZone getErasureCodingZone(String src) throws IOException;
+  ErasureCodingZone getErasureCodingZone(String src) throws IOException;
 }

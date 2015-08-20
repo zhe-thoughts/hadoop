@@ -28,7 +28,6 @@ import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotAccessControlException;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguousUnderConstruction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
@@ -84,14 +83,15 @@ final class FSDirTruncateOp {
         fsd.checkPathAccess(pc, iip, FsAction.WRITE);
       }
       INodeFile file = INodeFile.valueOf(iip.getLastINode(), src);
-      final BlockStoragePolicy lpPolicy = fsd.getBlockManager()
-          .getStoragePolicy("LAZY_PERSIST");
 
       // not support truncating file with striped blocks
       if (file.isStriped()) {
         throw new UnsupportedOperationException(
             "Cannot truncate file with striped block " + src);
       }
+
+      final BlockStoragePolicy lpPolicy = fsd.getBlockManager()
+          .getStoragePolicy("LAZY_PERSIST");
 
       if (lpPolicy != null && lpPolicy.getId() == file.getStoragePolicyID()) {
         throw new UnsupportedOperationException(
@@ -214,6 +214,7 @@ final class FSDirTruncateOp {
     assert fsn.hasWriteLock();
 
     INodeFile file = iip.getLastINode().asFile();
+    assert !file.isStriped();
     file.recordModification(iip.getLatestSnapshotId());
     file.toUnderConstruction(leaseHolder, clientMachine);
     assert file.isUnderConstruction() : "inode should be under construction.";
@@ -221,13 +222,11 @@ final class FSDirTruncateOp {
         file.getFileUnderConstructionFeature().getClientName(), file.getId());
     boolean shouldRecoverNow = (newBlock == null);
     BlockInfo oldBlock = file.getLastBlock();
-    assert !oldBlock.isStriped();
 
     boolean shouldCopyOnTruncate = shouldCopyOnTruncate(fsn, file, oldBlock);
     if (newBlock == null) {
-      newBlock = (shouldCopyOnTruncate) ?
-          fsn.createNewBlock(file.isStriped()) : new Block(
-          oldBlock.getBlockId(), oldBlock.getNumBytes(),
+      newBlock = (shouldCopyOnTruncate) ? fsn.createNewBlock(false)
+          : new Block(oldBlock.getBlockId(), oldBlock.getNumBytes(),
           fsn.nextGenerationStamp(fsn.getBlockIdManager().isLegacyBlock(
               oldBlock)));
     }
