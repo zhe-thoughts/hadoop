@@ -213,8 +213,8 @@ class FSDirWriteFileOp {
       DatanodeStorageInfo[] locs, long offset) throws IOException {
     LocatedBlock lBlk = BlockManager.newLocatedBlock(fsn.getExtendedBlock(blk),
         blk, locs, offset);
-    fsn.getFSDirectory().getBlockManager().
-        setBlockToken(lBlk, BlockTokenIdentifier.AccessMode.WRITE);
+    fsn.getBlockManager().setBlockToken(lBlk,
+        BlockTokenIdentifier.AccessMode.WRITE);
     return lBlk;
   }
 
