@@ -1900,7 +1900,7 @@ public class DFSTestUtil {
       assert dir != null;
       dfs.mkdirs(dir);
       try {
-        dfs.getClient().createErasureCodingZone(dir.toString(), null);
+        dfs.getClient().setErasureCodingPolicy(dir.toString(), null);
       } catch (IOException e) {
         if (!e.getMessage().contains("non-empty directory")) {
           throw e;

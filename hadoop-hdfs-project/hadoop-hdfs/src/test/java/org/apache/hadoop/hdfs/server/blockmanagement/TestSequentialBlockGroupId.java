@@ -86,7 +86,7 @@ public class TestSequentialBlockGroupId {
         .getBlockGroupIdGenerator();
     fs.mkdirs(eczone);
     cluster.getFileSystem().getClient()
-        .createErasureCodingZone("/eczone", null);
+        .setErasureCodingPolicy("/eczone", null);
   }
 
   @After

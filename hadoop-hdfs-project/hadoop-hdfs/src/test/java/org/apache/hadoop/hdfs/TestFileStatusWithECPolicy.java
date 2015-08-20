@@ -50,7 +50,7 @@ public class TestFileStatusWithECPolicy {
 
     final ErasureCodingPolicy ecPolicy1 = ErasureCodingPolicyManager.getSystemDefaultPolicy();
     // create EC zone on dir
-    fs.createErasureCodingZone(dir, ecPolicy1);
+    fs.setErasureCodingPolicy(dir, ecPolicy1);
     final ErasureCodingPolicy ecPolicy2 = client.getFileInfo(dir.toUri().getPath()).getErasureCodingPolicy();
     assertNotNull(ecPolicy2);
     assertTrue(ecPolicy1.equals(ecPolicy2));

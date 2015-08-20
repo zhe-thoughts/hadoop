@@ -473,7 +473,7 @@ public class TestMover {
       client.setStoragePolicy(barDir,
           HdfsConstants.HOT_STORAGE_POLICY_NAME);
       // set "/bar" directory with EC zone.
-      client.createErasureCodingZone(barDir, null);
+      client.setErasureCodingPolicy(barDir, null);
 
       // write file to barDir
       final String fooFile = "/bar/foo";

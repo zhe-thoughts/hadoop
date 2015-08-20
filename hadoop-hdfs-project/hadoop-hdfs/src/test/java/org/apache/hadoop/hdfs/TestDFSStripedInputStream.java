@@ -79,7 +79,7 @@ public class TestDFSStripedInputStream {
     }
     fs = cluster.getFileSystem();
     fs.mkdirs(dirPath);
-    fs.getClient().createErasureCodingZone(dirPath.toString(), null);
+    fs.getClient().setErasureCodingPolicy(dirPath.toString(), null);
   }
 
   @After

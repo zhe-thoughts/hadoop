@@ -21,7 +21,7 @@ import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.protocol.Block;
-import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.namenode.NameNode.OperationCategory;
 import org.apache.hadoop.hdfs.util.RwLock;
@@ -51,13 +51,13 @@ public interface Namesystem extends RwLock, SafeMode {
   boolean isInSnapshot(BlockCollection bc);
 
   /**
-   * Gets the ECZone for path
+   * Gets the erasure coding policy for the path
    * @param src
    *          - path
-   * @return {@link ErasureCodingZone}
+   * @return {@link ErasureCodingPolicy}
    * @throws IOException
    */
-  ErasureCodingZone getErasureCodingZoneForPath(String src)
+  ErasureCodingPolicy getErasureCodingPolicyForPath(String src)
       throws IOException;
 
   CacheManager getCacheManager();

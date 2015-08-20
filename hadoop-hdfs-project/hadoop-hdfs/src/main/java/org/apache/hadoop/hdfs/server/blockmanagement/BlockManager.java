@@ -56,7 +56,6 @@ import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
 import org.apache.hadoop.hdfs.protocol.BlockListAsLongs.BlockReportReplica;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
-import org.apache.hadoop.hdfs.protocol.ErasureCodingZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
@@ -963,11 +962,9 @@ public class BlockManager implements BlockStatsMXBean {
       final boolean isFileUnderConstruction, final long offset,
       final long length, final boolean needBlockToken,
       final boolean inSnapshot, FileEncryptionInfo feInfo,
-      ErasureCodingZone ecZone)
+      ErasureCodingPolicy ecPolicy)
       throws IOException {
     assert namesystem.hasReadLock();
-    final ErasureCodingPolicy ecPolicy = ecZone != null ? ecZone
-        .getErasureCodingPolicy() : null;
     if (blocks == null) {
       return null;
     } else if (blocks.length == 0) {
@@ -1606,14 +1603,14 @@ public class BlockManager implements BlockStatsMXBean {
             assert rw instanceof ErasureCodingWork;
             assert rw.targets.length > 0;
             String src = block.getBlockCollection().getName();
-            ErasureCodingZone ecZone = null;
+            ErasureCodingPolicy ecPolicy = null;
             try {
-              ecZone = namesystem.getErasureCodingZoneForPath(src);
+              ecPolicy = namesystem.getErasureCodingPolicyForPath(src);
             } catch (IOException e) {
               blockLog
-                  .warn("Failed to get the EC zone for the file {} ", src);
+                  .warn("Failed to get the EC policy for the file {} ", src);
             }
-            if (ecZone == null) {
+            if (ecPolicy == null) {
               blockLog.warn("No erasure coding policy found for the file {}. "
                   + "So cannot proceed for recovery", src);
               // TODO: we may have to revisit later for what we can do better to
@@ -1623,8 +1620,7 @@ public class BlockManager implements BlockStatsMXBean {
             rw.targets[0].getDatanodeDescriptor().addBlockToBeErasureCoded(
                 new ExtendedBlock(namesystem.getBlockPoolId(), block),
                 rw.srcNodes, rw.targets,
-                ((ErasureCodingWork) rw).liveBlockIndicies,
-                ecZone.getErasureCodingPolicy());
+                ((ErasureCodingWork) rw).liveBlockIndicies, ecPolicy);
           } else {
             rw.srcNodes[0].addBlockToBeReplicated(block, targets);
           }

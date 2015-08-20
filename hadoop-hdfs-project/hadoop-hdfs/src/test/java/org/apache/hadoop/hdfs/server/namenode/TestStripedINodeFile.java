@@ -234,7 +234,7 @@ public class TestStripedINodeFile {
       dfs.mkdirs(zone);
 
       // create erasure zone
-      dfs.createErasureCodingZone(zone, null);
+      dfs.setErasureCodingPolicy(zone, null);
       DFSTestUtil.createFile(dfs, zoneFile, len, (short) 1, 0xFEED);
       DFSTestUtil.createFile(dfs, contiguousFile, len, (short) 1, 0xFEED);
       final FSDirectory fsd = fsn.getFSDirectory();

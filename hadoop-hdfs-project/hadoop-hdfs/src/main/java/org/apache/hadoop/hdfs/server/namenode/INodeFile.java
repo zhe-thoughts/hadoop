@@ -83,15 +83,15 @@ public class INodeFile extends INodeWithAdditionalFields
 
   /** 
    * Bit format:
-   * [4-bit storagePolicyID][1-bit isStriped]
+   * [4-bit storagePolicyID][1-bit erasureCodingPolicy]
    * [11-bit replication][48-bit preferredBlockSize]
    */
   static enum HeaderFormat {
     PREFERRED_BLOCK_SIZE(null, 48, 1),
     REPLICATION(PREFERRED_BLOCK_SIZE.BITS, 11, 0),
-    IS_STRIPED(REPLICATION.BITS, 1, 0),
-    STORAGE_POLICY_ID(IS_STRIPED.BITS, BlockStoragePolicySuite.ID_BIT_LENGTH,
-        0);
+    ERASURE_CODING_POLICY(REPLICATION.BITS, 1, 0),
+    STORAGE_POLICY_ID(ERASURE_CODING_POLICY.BITS,
+        BlockStoragePolicySuite.ID_BIT_LENGTH, 0);
 
     private final LongBitFormat BITS;
 
@@ -111,10 +111,8 @@ public class INodeFile extends INodeWithAdditionalFields
       return (byte)STORAGE_POLICY_ID.BITS.retrieve(header);
     }
 
-    static boolean isStriped(long header) {
-      long isStriped = IS_STRIPED.BITS.retrieve(header);
-      Preconditions.checkState(isStriped == 0 || isStriped == 1);
-      return isStriped == 1;
+    static byte getErasureCodingPolicyID(long header) {
+      return (byte)ERASURE_CODING_POLICY.BITS.retrieve(header);
     }
 
     static long toLong(long preferredBlockSize, short replication,
@@ -127,10 +125,10 @@ public class INodeFile extends INodeWithAdditionalFields
       // Replication factor for striped files is zero
       if (isStriped) {
         h = REPLICATION.BITS.combine(0L, h);
-        h = IS_STRIPED.BITS.combine(1L, h);
+        h = ERASURE_CODING_POLICY.BITS.combine(1L, h);
       } else {
         h = REPLICATION.BITS.combine(replication, h);
-        h = IS_STRIPED.BITS.combine(0L, h);
+        h = ERASURE_CODING_POLICY.BITS.combine(0L, h);
       }
       h = STORAGE_POLICY_ID.BITS.combine(storagePolicyID, h);
       return h;
@@ -446,13 +444,29 @@ public class INodeFile extends INodeWithAdditionalFields
     setStoragePolicyID(storagePolicyId);
   }
 
+
+  /**
+   * @return The ID of the erasure coding policy on the file. 0 represents no
+   *          EC policy (file is in contiguous format). 1 represents the system
+   *          default EC policy:
+   *          {@link ErasureCodingPolicyManager#SYS_DEFAULT_POLICY}.
+   *          More policies will be supported as a follow-on.
+   */
+  @VisibleForTesting
+  @Override
+  public byte getErasureCodingPolicyID() {
+    byte policyID = HeaderFormat.getErasureCodingPolicyID(header);
+    Preconditions.checkState(policyID == 0 || policyID == 1);
+    return policyID;
+  }
+
   /**
    * @return true if the file is in the striping layout.
    */
   @VisibleForTesting
   @Override
   public boolean isStriped() {
-    return HeaderFormat.isStriped(header);
+    return getErasureCodingPolicyID() > 0;
   }
 
   @Override // INodeFileAttributes
