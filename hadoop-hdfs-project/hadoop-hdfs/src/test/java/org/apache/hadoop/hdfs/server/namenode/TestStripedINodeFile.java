@@ -39,7 +39,7 @@ import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStriped;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoUnderConstructionStriped;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoStripedUnderConstruction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 
@@ -157,8 +157,8 @@ public class TestStripedINodeFile {
       throws IOException, InterruptedException {
     INodeFile inf = createStripedINodeFile();
     Block blk = new Block(1);
-    BlockInfoUnderConstructionStriped bInfoUCStriped
-        = new BlockInfoUnderConstructionStriped(blk, testECPolicy);
+    BlockInfoStripedUnderConstruction bInfoUCStriped
+        = new BlockInfoStripedUnderConstruction(blk, testECPolicy);
     bInfoUCStriped.setNumBytes(100);
     inf.addBlock(bInfoUCStriped);
     assertEquals(100, inf.computeFileSize());
@@ -191,8 +191,8 @@ public class TestStripedINodeFile {
       throws IOException, InterruptedException {
     INodeFile inf = createStripedINodeFile();
     Block blk = new Block(1);
-    BlockInfoUnderConstructionStriped bInfoUCStriped
-        = new BlockInfoUnderConstructionStriped(blk, testECPolicy);
+    BlockInfoStripedUnderConstruction bInfoUCStriped
+        = new BlockInfoStripedUnderConstruction(blk, testECPolicy);
     bInfoUCStriped.setNumBytes(100);
     inf.addBlock(bInfoUCStriped);
 

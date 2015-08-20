@@ -44,6 +44,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.google.common.base.Preconditions;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ByteBufferReadable;
@@ -1140,12 +1141,13 @@ implements ByteBufferReadable, CanSetDropBehind, CanSetReadahead,
 
   /**
    * Read data from one DataNode.
-   * @param datanode the datanode from which to read data
-   * @param block the located block containing the requested data
-   * @param startInBlk the startInBlk offset of the block
-   * @param endInBlk the endInBlk offset of the block
-   * @param buf the given byte array into which the data is read
-   * @param offset the offset in buf
+   *
+   * @param datanode          the datanode from which to read data
+   * @param block             the located block containing the requested data
+   * @param startInBlk        the startInBlk offset of the block
+   * @param endInBlk          the endInBlk offset of the block
+   * @param buf               the given byte array into which the data is read
+   * @param offset            the offset in buf
    * @param corruptedBlockMap map recording list of datanodes with corrupted
    *                          block replica
    */
@@ -1188,7 +1190,7 @@ implements ByteBufferReadable, CanSetDropBehind, CanSetReadahead,
         throw new IOException(msg);
       } catch (IOException e) {
         if (e instanceof InvalidEncryptionKeyException && refetchEncryptionKey > 0) {
-          DFSClient.LOG.info("Will fetch a new encryption key and retry, " 
+          DFSClient.LOG.info("Will fetch a new encryption key and retry, "
               + "encryption key was invalid when connecting to " + datanode.addr
               + " : " + e);
           // The encryption key used is invalid.
@@ -1590,6 +1592,9 @@ implements ByteBufferReadable, CanSetDropBehind, CanSetReadahead,
    */
   @Override
   public synchronized boolean seekToNewSource(long targetPos) throws IOException {
+    if (currentNode == null) {
+      return seekToBlockSource(targetPos);
+    }
     boolean markedDead = deadNodes.containsKey(currentNode);
     addToDeadNodes(currentNode);
     DatanodeInfo oldNode = currentNode;
