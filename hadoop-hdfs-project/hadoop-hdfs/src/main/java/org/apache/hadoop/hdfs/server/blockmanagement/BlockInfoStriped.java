@@ -55,7 +55,7 @@ public class BlockInfoStriped extends BlockInfo {
 
   BlockInfoStriped(BlockInfoStriped b) {
     this(b, b.getErasureCodingPolicy());
-    this.setBlockCollection(b.getBlockCollection());
+    this.setBlockCollectionId(b.getBlockCollectionId());
   }
 
   public short getTotalBlockNum() {
