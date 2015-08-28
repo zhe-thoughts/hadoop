@@ -4010,7 +4010,7 @@ public class BlockManager implements BlockStatsMXBean {
 
   public BlockCollection getBlockCollection(Block b) {
     BlockInfo storedBlock = getStoredBlock(b);
-    return namesystem.getBlockCollection(storedBlock.getBlockCollectionId());
+    return storedBlock == null ? null : getBlockCollection(storedBlock);
   }
 
   public BlockCollection getBlockCollection(BlockInfo b) {
