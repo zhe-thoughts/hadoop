@@ -24,6 +24,7 @@ import java.util.EnumSet;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.hdfs.shortcircuit.ClientMmap;
+import org.apache.hadoop.util.DataChecksum;
 
 /**
  * An ExternalBlockReader uses pluggable ReplicaAccessor objects to read from
@@ -115,6 +116,11 @@ public final class ExternalBlockReader implements BlockReader {
   @Override
   public ClientMmap getClientMmap(EnumSet<ReadOption> opts) {
     // For now, pluggable ReplicaAccessors do not support zero-copy.
+    return null;
+  }
+
+  @Override
+  public DataChecksum getDataChecksum() {
     return null;
   }
 }
