@@ -4008,11 +4008,6 @@ public class BlockManager implements BlockStatsMXBean {
     return addBlockCollection(block, bc);
   }
 
-  public BlockCollection getBlockCollection(Block b) {
-    BlockInfo storedBlock = getStoredBlock(b);
-    return storedBlock == null ? null : getBlockCollection(storedBlock);
-  }
-
   public BlockCollection getBlockCollection(BlockInfo b) {
     return namesystem.getBlockCollection(b.getBlockCollectionId());
   }

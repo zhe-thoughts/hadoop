@@ -122,7 +122,7 @@ public class FSDirAttrOp {
                                             " does not exist.");
       }
       boolean changed = unprotectedSetTimes(fsd, inode, mtime, atime, true,
-                                            iip.getLatestSnapshotId());
+          iip.getLatestSnapshotId());
       if (changed) {
         fsd.getEditLog().logTimes(src, mtime, atime);
       }
@@ -409,10 +409,10 @@ public class FSDirAttrOp {
       return null;
     }
     INodeFile file = inode.asFile();
-      if (file.isStriped()) {
-        throw new UnsupportedActionException(
-            "Cannot set replication to a file with striped blocks");
-      }
+    if (file.isStriped()) {
+      throw new UnsupportedActionException(
+          "Cannot set replication to a file with striped blocks");
+    }
 
     // Make sure the directory has sufficient quotas
     short oldBR = file.getPreferredBlockReplication();

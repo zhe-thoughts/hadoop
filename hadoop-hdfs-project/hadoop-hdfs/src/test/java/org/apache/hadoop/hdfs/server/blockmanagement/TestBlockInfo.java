@@ -71,18 +71,6 @@ public class TestBlockInfo {
   }
 
   @Test
-  public void testCopyConstructor() {
-    BlockInfoContiguous old = new BlockInfoContiguous((short) 3);
-    try {
-      BlockInfoContiguous copy = new BlockInfoContiguous(old);
-      assertEquals(old.getBlockCollectionId(), copy.getBlockCollectionId());
-      assertEquals(old.getCapacity(), copy.getCapacity());
-    } catch (Exception e) {
-      Assert.fail("Copy constructor throws exception: " + e);
-    }
-  }
-
-  @Test
   public void testReplaceStorage() throws Exception {
 
     // Create two dummy storages.

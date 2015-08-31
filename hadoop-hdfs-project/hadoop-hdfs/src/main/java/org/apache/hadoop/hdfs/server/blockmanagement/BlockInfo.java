@@ -87,15 +87,6 @@ public abstract class BlockInfo extends Block
     this.replication = isStriped() ? 0 : size;
   }
 
-  /**
-   * Copy construction.
-   * @param from BlockInfo to copy from.
-   */
-  protected BlockInfo(BlockInfo from) {
-    this(from, from.getReplication());
-    this.bcId = from.bcId;
-  }
-
   public short getReplication() {
     return replication;
   }

@@ -35,15 +35,6 @@ public class BlockInfoContiguous extends BlockInfo {
   }
 
   /**
-   * Copy construction.
-   * @param from BlockInfoContiguous to copy from.
-   */
-  protected BlockInfoContiguous(BlockInfoContiguous from) {
-    this(from, (short) (from.triplets.length / 3));
-    this.setBlockCollectionId(from.getBlockCollectionId());
-  }
-
-  /**
    * Ensure that there is enough  space to include num more triplets.
    * @return first free triplet index.
    */
