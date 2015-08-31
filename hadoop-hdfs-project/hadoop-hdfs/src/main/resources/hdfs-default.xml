@@ -2403,7 +2403,6 @@
 </property>
 
 <property>
-<<<<<<< HEAD
   <name>dfs.datanode.stripedread.threshold.millis</name>
   <value>5000</value>
   <description>datanode striped read threshold in millisecond.
@@ -2421,14 +2420,16 @@
   <name>dfs.datanode.stripedread.buffer.size</name>
   <value>262144</value>
   <description>datanode striped read buffer size.
-=======
+  </description>
+</property>
+
+<property>
   <name>dfs.namenode.quota.init-threads</name>
   <value>4</value>
   <description>
     The number of concurrent threads to be used in quota initialization. The
     speed of quota initialization also affects the namenode fail-over latency.
     If the size of name space is big, try increasing this.
->>>>>>> cbb249534aa72ff6c290c4f99766415aeea9d6f5
   </description>
 </property>
 
