@@ -266,8 +266,9 @@ class FSDirWriteFileOp {
 
     // allocate new block, record block locations in INode.
     final boolean isStriped = pendingFile.isStriped();
+    final ErasureCodingPolicy ecPolicy = fsn.getErasureCodingPolicy(src);
     // allocate new block, record block locations in INode.
-    Block newBlock = fsn.createNewBlock(isStriped);
+    Block newBlock = fsn.createNewBlock(ecPolicy);
     INodesInPath inodesInPath = INodesInPath.fromINode(pendingFile);
     saveAllocatedBlock(fsn, src, inodesInPath, newBlock, targets, isStriped);
 

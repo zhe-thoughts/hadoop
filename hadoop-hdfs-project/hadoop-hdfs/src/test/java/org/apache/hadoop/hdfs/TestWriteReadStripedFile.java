@@ -57,6 +57,7 @@ public class TestWriteReadStripedFile {
     GenericTestUtils.setLogLevel(DFSOutputStream.LOG, Level.ALL);
     GenericTestUtils.setLogLevel(DataStreamer.LOG, Level.ALL);
     GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(BlockMetadataCoordinator.LOG, Level.ALL);
     ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
         .getLogger().setLevel(Level.ALL);
   }

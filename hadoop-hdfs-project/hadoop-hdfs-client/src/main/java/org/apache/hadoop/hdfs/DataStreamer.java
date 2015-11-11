@@ -353,7 +353,7 @@ class DataStreamer extends Daemon {
   private volatile boolean streamerClosed = false;
   protected volatile ExtendedBlock block; // its length is number of bytes acked
   protected Token<BlockTokenIdentifier> accessToken;
-  private DataOutputStream blockStream;
+  protected DataOutputStream blockStream;
   private DataInputStream blockReplyStream;
   private ResponseProcessor response = null;
   private volatile DatanodeInfo[] nodes = null; // list of targets for current block
@@ -720,7 +720,7 @@ class DataStreamer extends Daemon {
     closeInternal();
   }
 
-  private void closeInternal() {
+  protected void closeInternal() {
     closeResponder();       // close and join
     closeStream();
     streamerClosed = true;
@@ -846,6 +846,7 @@ class DataStreamer extends Daemon {
   }
 
   void setStreamerAsClosed() {
+    LOG.debug("Closing streamer " + this);
     streamerClosed = true;
   }
 
@@ -1083,7 +1084,7 @@ class DataStreamer extends Daemon {
    *
    * @return true if it should sleep for a while after returning.
    */
-  private boolean processDatanodeOrExternalError() throws IOException {
+  protected boolean processDatanodeOrExternalError() throws IOException {
     if (!errorState.hasDatanodeError() && !shouldHandleExternalError()) {
       return false;
     }
@@ -1679,7 +1680,7 @@ class DataStreamer extends Daemon {
     }
   }
 
-  private LocatedBlock locateFollowingBlock(DatanodeInfo[] excludedNodes)
+  protected LocatedBlock locateFollowingBlock(DatanodeInfo[] excludedNodes)
       throws IOException {
     return DFSOutputStream.addBlock(excludedNodes, dfsClient, src, block,
         stat.getFileId(), favoredNodes);

@@ -2634,13 +2634,14 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /**
    * Create new block with a unique block id and a new generation stamp.
-   * @param isStriped is the file under striping or contiguous layout?
+   * @param ecPolicy The erasure coding policy of the belonging file
    */
-  Block createNewBlock(boolean isStriped) throws IOException {
+  Block createNewBlock(ErasureCodingPolicy ecPolicy) throws IOException {
     assert hasWriteLock();
-    Block b = new Block(nextBlockId(isStriped), 0, 0);
+    Block b = new Block(nextBlockId(ecPolicy != null), 0, 0);
     // Increment the generation stamp for every new block.
-    b.setGenerationStamp(nextGenerationStamp(false));
+    b.setGenerationStamp(nextGenerationStamp(false,
+        ecPolicy == null ? 0 : ecPolicy.getNumParityUnits()));
     return b;
   }
 
@@ -3164,7 +3165,7 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       }
       // start recovery of the last block for this file
       long blockRecoveryId = nextGenerationStamp(
-          blockIdManager.isLegacyBlock(lastBlock));
+          blockIdManager.isLegacyBlock(lastBlock), 0);
       lease = reassignLease(lease, src, recoveryLeaseHolder, pendingFile);
       if(copyOnTruncate) {
         lastBlock.setGenerationStamp(blockRecoveryId);
@@ -5268,13 +5269,23 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
 
   /**
    * Increments, logs and then returns the stamp
+   *
+   * @param preAllocate The number of stamps to preallocate. This is useful
+   *                    when writing a striped block. With preallocated stamps
+   *                    the client can handle I/O failures locally.
    */
-  long nextGenerationStamp(boolean legacyBlock)
-      throws IOException, SafeModeException {
+  long nextGenerationStamp(boolean legacyBlock, int preAllocate)
+      throws IOException {
+    // Only preallocate GS for striped blocks
+    Preconditions.checkArgument(!(legacyBlock && preAllocate > 0));
     assert hasWriteLock();
     checkNameNodeSafeMode("Cannot get next generation stamp");
 
     long gs = blockIdManager.nextGenerationStamp(legacyBlock);
+    for (int i = 0; i < preAllocate; i++) {
+      blockIdManager.nextGenerationStamp(false);
+    }
+
     if (legacyBlock) {
       getEditLog().logGenerationStampV1(gs);
     } else {
@@ -5418,7 +5429,8 @@ public class FSNamesystem implements Namesystem, FSNamesystemMBean,
       final INodeFile file = checkUCBlock(block, clientName);
   
       // get a new generation stamp and an access token
-      block.setGenerationStamp(nextGenerationStamp(blockIdManager.isLegacyBlock(block.getLocalBlock())));
+      block.setGenerationStamp(nextGenerationStamp(
+          blockIdManager.isLegacyBlock(block.getLocalBlock()), 0));
 
       locatedBlock = BlockManager.newLocatedBlock(
           block, file.getLastBlock(), null, -1);

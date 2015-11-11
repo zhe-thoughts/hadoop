@@ -22,41 +22,50 @@ import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import com.google.common.base.Preconditions;
 import org.apache.hadoop.fs.StorageType;
-import org.apache.hadoop.hdfs.DFSStripedOutputStream.Coordinator;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.datatransfer.BlockConstructionStage;
 import org.apache.hadoop.hdfs.server.datanode.CachingStrategy;
 import org.apache.hadoop.hdfs.util.ByteArrayManager;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Progressable;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.util.Time;
 
 /**
  * This class extends {@link DataStreamer} to support writing striped blocks
- * to datanodes.
- * A {@link DFSStripedOutputStream} has multiple {@link StripedDataStreamer}s.
- * Whenever the streamers need to talk the namenode, only the fastest streamer
- * sends an rpc call to the namenode and then populates the result for the
- * other streamers.
+ * to DataNodes.
+ *
+ * Main differences compared with {@link DataStreamer}:
+ *  1) A striped streamer's lifespan is limited within a single block. After
+ *      finishing writing to a block the striped streamer will stop.
+ *  2) A striped streamer doesn't communicate with NameNode. Instead, it adds
+ *      events to {@link BlockMetadataCoordinator}, which will coordinate
+ *      updates from all streamers before communicating to NameNode.
  */
 @InterfaceAudience.Private
 public class StripedDataStreamer extends DataStreamer {
-  private final Coordinator coordinator;
+  private final BlockMetadataCoordinator coordinator;
   private final int index;
+  private LocatedBlock locatedBlock;
 
   StripedDataStreamer(HdfsFileStatus stat,
-                      DFSClient dfsClient, String src,
-                      Progressable progress, DataChecksum checksum,
-                      AtomicReference<CachingStrategy> cachingStrategy,
-                      ByteArrayManager byteArrayManage, String[] favoredNodes,
-                      short index, Coordinator coordinator) {
-    super(stat, null, dfsClient, src, progress, checksum, cachingStrategy,
-        byteArrayManage, favoredNodes);
+      DFSClient dfsClient, String src,
+      Progressable progress, DataChecksum checksum,
+      AtomicReference<CachingStrategy> cachingStrategy,
+      ByteArrayManager byteArrayManage, String[] favoredNodes,
+      short index, BlockMetadataCoordinator coordinator,
+      LocatedBlock lb) {
+    super(stat, lb == null ? null : lb.getBlock(), dfsClient, src, progress,
+        checksum, cachingStrategy, byteArrayManage, favoredNodes);
     this.index = index;
     this.coordinator = coordinator;
+    this.locatedBlock = lb;
+    LOG.debug("Creating new StripedDataStreamer " + this);
   }
 
   int getIndex() {
@@ -69,8 +78,11 @@ public class StripedDataStreamer extends DataStreamer {
 
   @Override
   protected void endBlock() {
-    coordinator.offerEndBlock(index, block);
+    LOG.info("StripedDataStreamer " + getIndex() + " ending block");
     super.endBlock();
+    coordinator.addEvent(new BlockMetadataCoordinator.
+        EndBlockEvent(getIndex()));
+    closeInternal();
   }
 
   /**
@@ -78,43 +90,20 @@ public class StripedDataStreamer extends DataStreamer {
    * All the striped data streamer only needs to fetch from the queue, which
    * should be already be ready.
    */
-  private LocatedBlock getFollowingBlock() throws IOException {
+  @Override
+  protected LocatedBlock locateFollowingBlock(DatanodeInfo[] excludedNodes)
+      throws IOException {
     if (!this.isHealthy()) {
       // No internal block for this streamer, maybe no enough healthy DN.
       // Throw the exception which has been set by the StripedOutputStream.
       this.getLastException().check(false);
     }
-    return coordinator.getFollowingBlocks().poll(index);
-  }
-
-  @Override
-  protected LocatedBlock nextBlockOutputStream() throws IOException {
-    boolean success;
-    LocatedBlock lb = getFollowingBlock();
-    block = lb.getBlock();
-    block.setNumBytes(0);
-    bytesSent = 0;
-    accessToken = lb.getBlockToken();
-
-    DatanodeInfo[] nodes = lb.getLocations();
-    StorageType[] storageTypes = lb.getStorageTypes();
-
-    // Connect to the DataNode. If fail the internal error state will be set.
-    success = createBlockOutputStream(nodes, storageTypes, 0L, false);
-
-    if (!success) {
-      block = null;
-      final DatanodeInfo badNode = nodes[getErrorState().getBadNodeIndex()];
-      LOG.info("Excluding datanode " + badNode);
-      excludedNodes.put(badNode, badNode);
-      throw new IOException("Unable to create new block." + this);
-    }
-    return lb;
+    return locatedBlock;
   }
 
   @VisibleForTesting
   LocatedBlock peekFollowingBlock() {
-    return coordinator.getFollowingBlocks().peek(index);
+    return locatedBlock;
   }
 
   @Override
@@ -125,60 +114,94 @@ public class StripedDataStreamer extends DataStreamer {
       if (!handleRestartingDatanode()) {
         return;
       }
-      if (!handleBadDatanode()) {
-        // for striped streamer if it is datanode error then close the stream
-        // and return. no need to replace datanode
-        return;
-      }
+      handleBadDatanode();
 
-      // get a new generation stamp and an access token
-      final LocatedBlock lb = coordinator.getNewBlocks().take(index);
-      long newGS = lb.getBlock().getGenerationStamp();
-      setAccessToken(lb.getBlockToken());
-
-      // set up the pipeline again with the remaining nodes. when a striped
-      // data streamer comes here, it must be in external error state.
-      assert getErrorState().hasExternalError();
-      success = createBlockOutputStream(nodes, nodeStorageTypes, newGS, true);
-
-      failPacket4Testing();
-      getErrorState().checkRestartingNodeDeadline(nodes);
-
-      // notify coordinator the result of createBlockOutputStream
-      synchronized (coordinator) {
-        if (!streamerClosed()) {
-          coordinator.updateStreamer(this, success);
-          coordinator.notify();
-        } else {
-          success = false;
-        }
-      }
-
-      if (success) {
-        // wait for results of other streamers
-        success = coordinator.takeStreamerUpdateResult(index);
-        if (success) {
-          // if all succeeded, update its block using the new GS
-          block = newBlock(block, newGS);
-        } else {
-          // otherwise close the block stream and restart the recovery process
-          closeStream();
-        }
-      } else {
-        // if fail, close the stream. The internal error state and last
-        // exception have already been set in createBlockOutputStream
-        // TODO: wait for restarting DataNodes during RollingUpgrade
-        closeStream();
+      if (getErrorState().hasInternalError()) {
+        LOG.debug("Streamer #" + getIndex() + " updating block for pipeline");
+        // If the streamer itself has encountered an error, bump GS
+        coordinator.addEvent(new BlockMetadataCoordinator.DNFailureEvent(getIndex()));
+        Preconditions.checkState(coordinator.getProposedGenStamp()
+            >= block.getGenerationStamp());
+        closeInternal();
         setStreamerAsClosed();
+      } else {
+        long newGS = coordinator.getProposedGenStamp();
+        Preconditions.checkState(newGS >
+            locatedBlock.getBlock().getGenerationStamp());
+        LOG.debug("Streamer " + getIndex() + " processing external error, " +
+            "updating DN with new GS " + newGS + " (old GS = " +
+            locatedBlock.getBlock().getGenerationStamp() + ")");
+
+        while (accessToken != null && accessToken.decodeIdentifier() != null &&
+            accessToken.decodeIdentifier().getExpiryDate() <
+            Time.monotonicNow()) {
+          try {
+            Thread.sleep(100);
+          } catch (InterruptedException e) {
+            throw new IOException(
+                this + "interrupted while waiting for updated access token.");
+          }
+        }
+        success = createBlockOutputStream(nodes, nodeStorageTypes, newGS, true);
+        failPacket4Testing();
+        getErrorState().checkRestartingNodeDeadline(nodes);
+
+        if (success) {
+          // Notify coordinator the event of DN accepting new GS
+          coordinator.addEvent(new BlockMetadataCoordinator.DNAcceptedGSEvent(
+              index, newGS));
+          locatedBlock.getBlock().setGenerationStamp(newGS);
+          synchronized (this.getErrorState()) {
+            if (newGS == coordinator.getProposedGenStamp()) {
+              this.getErrorState().reset();
+            }
+          }
+        } else {
+          // if fail, close the stream. The internal error state and last
+          // exception have already been set in createBlockOutputStream
+          // TODO: wait for restarting DataNodes during RollingUpgrade
+          LOG.debug("Finding failure of DN #" + getIndex() + " during GS bumping.");
+          coordinator.addEvent(new BlockMetadataCoordinator.DNFailureEvent(getIndex()));
+          closeInternal();
+          setStreamerAsClosed();
+        }
       }
     } // while
   }
 
-  void setExternalError() {
-    getErrorState().setExternalError();
+  @Override
+  protected LocatedBlock nextBlockOutputStream() throws IOException {
+    try {
+      LocatedBlock lb = super.nextBlockOutputStream();
+      coordinator.addEvent(new BlockMetadataCoordinator.
+          StreamerStreamingEvent(getIndex()));
+      return lb;
+    } catch (IOException e) {
+      closeInternal();
+      BlockMetadataCoordinator.StreamerStatus status =
+          coordinator.getStreamerStatus(getIndex());
+      if (status == BlockMetadataCoordinator.StreamerStatus.RUNNING ||
+          status == BlockMetadataCoordinator.StreamerStatus.INITIATED){
+        coordinator.addEvent(
+            new BlockMetadataCoordinator.DNFailureEvent(getIndex()));
+      }
+      throw e;
+    }
+  }
+
+  public void setExternalError() {
+    LOG.debug("Setting external error for streamer #" + getIndex() + ", currently has " +
+        getErrorState().hasInternalError() + "-" + getErrorState().hasDatanodeError());
+    synchronized (this.getErrorState()) {
+      getErrorState().setExternalError();
+    }
     synchronized (dataQueue) {
       dataQueue.notifyAll();
     }
+  }
+
+  LocatedBlock getLocatedBlock() {
+    return locatedBlock;
   }
 
   @Override

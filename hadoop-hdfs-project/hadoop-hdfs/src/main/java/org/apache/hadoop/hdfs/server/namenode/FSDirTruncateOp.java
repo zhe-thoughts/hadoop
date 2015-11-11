@@ -226,10 +226,10 @@ final class FSDirTruncateOp {
 
     boolean shouldCopyOnTruncate = shouldCopyOnTruncate(fsn, file, oldBlock);
     if (newBlock == null) {
-      newBlock = (shouldCopyOnTruncate) ? fsn.createNewBlock(false)
+      newBlock = (shouldCopyOnTruncate) ? fsn.createNewBlock(null)
           : new Block(oldBlock.getBlockId(), oldBlock.getNumBytes(),
           fsn.nextGenerationStamp(fsn.getBlockIdManager().isLegacyBlock(
-              oldBlock)));
+              oldBlock), 0));
     }
 
     final BlockInfo truncatedBlockUC;
