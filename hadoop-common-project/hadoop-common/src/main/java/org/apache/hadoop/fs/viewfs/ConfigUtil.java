@@ -20,6 +20,8 @@ package org.apache.hadoop.fs.viewfs;
 import java.net.URI;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.StringUtils;
+
 
 /**
  * Utilities for config variables of the viewFs See {@link ViewFs}
@@ -66,6 +68,19 @@ public class ConfigUtil {
       final URI target) {
     addLink( conf, Constants.CONFIG_VIEWFS_DEFAULT_MOUNT_TABLE, 
         src, target);   
+  }
+
+  public static void addCacheLink(Configuration conf, String mountTableName,
+      String src, final URI cacheURI, final URI pURI) {
+    conf.set(getConfigViewFsPrefix(mountTableName) + "." +
+        Constants.CONFIG_VIEWFS_LINK_CACHE + "." +
+        src, StringUtils.uriToString(new URI[]{cacheURI, pURI}));
+  }
+  
+  public static void addCacheLink(final Configuration conf, final String src,
+      final URI cacheURI, final URI pURI) {
+    addCacheLink(conf, Constants.CONFIG_VIEWFS_DEFAULT_MOUNT_TABLE, src,
+        cacheURI, pURI);
   }
   
   /**

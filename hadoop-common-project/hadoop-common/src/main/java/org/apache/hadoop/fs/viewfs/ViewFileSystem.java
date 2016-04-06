@@ -188,6 +188,13 @@ public class ViewFileSystem extends FileSystem {
           throw new UnsupportedFileSystemException("mergefs not implemented");
           // return MergeFs.createMergeFs(mergeFsURIList, config);
         }
+
+        @Override
+        protected
+        FileSystem getTargetFileSystem(URI cacheURI, URI pURI)
+            throws URISyntaxException, IOException {
+          return new CacheFileSystem(cacheURI, pURI, config);
+        }
       };
       workingDir = this.getHomeDirectory();
     } catch (URISyntaxException e) {
@@ -437,8 +444,13 @@ public class ViewFileSystem extends FileSystem {
 
   private Path getChrootedPath(InodeTree.ResolveResult<FileSystem> res,
       FileStatus status, Path f) throws IOException {
-    final String suffix = ((ChRootedFileSystem)res.targetFileSystem)
-        .stripOutRoot(status.getPath());
+    final String suffix;
+    if (res.targetFileSystem instanceof ChRootedFileSystem) {
+      suffix = ((ChRootedFileSystem)res.targetFileSystem)
+          .stripOutRoot(status.getPath());
+    } else { // nfly
+      suffix = ((CacheFileSystem.CacheFileStatus)status).stripRoot();
+    }
     return this.makeQualified(
         suffix.length() == 0 ? f : new Path(res.resolvedPath, suffix));
   }

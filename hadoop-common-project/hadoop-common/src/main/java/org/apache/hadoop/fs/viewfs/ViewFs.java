@@ -41,6 +41,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsConstants;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.FsStatus;
@@ -234,6 +235,12 @@ public class ViewFs extends AbstractFileSystem {
           throws URISyntaxException, UnsupportedFileSystemException {
         throw new UnsupportedFileSystemException("mergefs not implemented yet");
         // return MergeFs.createMergeFs(mergeFsURIList, config);
+      }
+
+      @Override
+      protected AbstractFileSystem getTargetFileSystem(URI cacheURI, URI pURI)
+          throws URISyntaxException, IOException {
+        throw new UnsupportedFileSystemException("cachefs not implemented yet");
       }
     };
   }

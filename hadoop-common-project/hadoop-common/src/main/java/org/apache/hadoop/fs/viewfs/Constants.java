@@ -57,6 +57,11 @@ public interface Constants {
    * Config variable for specifying a merge link
    */
   public static final String CONFIG_VIEWFS_LINK_MERGE = "linkMerge";
+
+  /**
+   * Config variable for specifying a cache link.
+   */
+  String CONFIG_VIEWFS_LINK_CACHE = "linkCache";
   
   /**
    * Config variable for specifying a merge of the root of the mount-table

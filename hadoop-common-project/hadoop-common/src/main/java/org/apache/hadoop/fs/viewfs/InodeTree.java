@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import com.google.common.base.Preconditions;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
@@ -31,6 +32,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -48,8 +50,7 @@ import org.apache.hadoop.util.StringUtils;
  *
  * @param <T> is AbstractFileSystem or FileSystem
  * 
- * The three main methods are
- * {@link #InodeTreel(Configuration)} // constructor
+ * The main methods are
  * {@link #InodeTree(Configuration, String)} // constructor
  * {@link #resolve(String, boolean)} 
  */
@@ -143,6 +144,12 @@ abstract class InodeTree<T> {
     }
   }
 
+  enum LinkType {
+    SINGLE,
+    MERGE,
+    CACHE
+  }
+
   /**
    * In internal class to represent a mount link
    * A mount link can be single dir link or a merge dir link.
@@ -156,19 +163,17 @@ abstract class InodeTree<T> {
    * is changed later it is then ignored (a dir with null entries)
    */
   static class INodeLink<T> extends INode<T> {
-    final boolean isMergeLink; // true if MergeLink
     final URI[] targetDirLinkList;
     final T targetFileSystem;   // file system object created from the link.
     
     /**
-     * Construct a mergeLink
+     * Construct a mergeLink or nfly.
      */
     INodeLink(final String pathToNode, final UserGroupInformation aUgi,
         final T targetMergeFs, final URI[] aTargetDirLinkList) {
       super(pathToNode, aUgi);
       targetFileSystem = targetMergeFs;
       targetDirLinkList = aTargetDirLinkList;
-      isMergeLink = true;
     }
     
     /**
@@ -180,7 +185,6 @@ abstract class InodeTree<T> {
       targetFileSystem = targetFs;
       targetDirLinkList = new URI[1];
       targetDirLinkList[0] = aTargetDirLink;
-      isMergeLink = false;
     }
     
     /**
@@ -200,7 +204,9 @@ abstract class InodeTree<T> {
 
 
   private void createLink(final String src, final String target,
-      final boolean isLinkMerge, final UserGroupInformation aUgi)
+      final LinkType linkType,
+      final UserGroupInformation aUgi,
+      final Configuration config)
       throws URISyntaxException, IOException,
     FileAlreadyExistsException, UnsupportedFileSystemException {
     // Validate that src is valid absolute path
@@ -247,23 +253,27 @@ abstract class InodeTree<T> {
     final INodeLink<T> newLink;
     final String fullPath = curInode.fullPath + (curInode == root ? "" : "/")
         + iPath;
-    if (isLinkMerge) { // Target is list of URIs
-      String[] targetsList = StringUtils.getStrings(target);
-      URI[] targetsListURI = new URI[targetsList.length];
-      int k = 0;
-      for (String itarget : targetsList) {
-        targetsListURI[k++] = new URI(itarget);
-      }
-      newLink = new INodeLink<T>(fullPath, aUgi,
-          getTargetFileSystem(targetsListURI), targetsListURI);
-    } else {
+
+    switch (linkType) {
+    case SINGLE:
       newLink = new INodeLink<T>(fullPath, aUgi,
           getTargetFileSystem(new URI(target)), new URI(target));
+      break;
+    case MERGE:
+    case CACHE:
+      final URI[] targetUris = StringUtils.stringToURI(
+          StringUtils.getStrings(target));
+      Preconditions.checkState(targetUris.length == 2);
+      newLink = new INodeLink<T>(fullPath, aUgi,
+            getTargetFileSystem(targetUris[0], targetUris[1]), targetUris);
+      break;
+    default:
+      throw new IllegalArgumentException(linkType + ": Infeasible linkType");
     }
     curInode.addLink(iPath, newLink);
     mountPoints.add(new MountPoint<T>(src, newLink));
   }
-  
+
   /**
    * Below the "public" methods of InodeTree
    */
@@ -279,9 +289,12 @@ abstract class InodeTree<T> {
   protected abstract T getTargetFileSystem(final INodeDir<T> dir)
     throws URISyntaxException;
   
-  protected abstract T getTargetFileSystem(final URI[] mergeFsURIList)
-  throws UnsupportedFileSystemException, URISyntaxException;
+  protected abstract T getTargetFileSystem(URI[] mergeFsURIList)
+      throws URISyntaxException, UnsupportedFileSystemException;
   
+  protected abstract T getTargetFileSystem(final URI cacheURI, final URI pURI)
+    throws UnsupportedFileSystemException, URISyntaxException, IOException;
+
   /**
    * Create Inode Tree from the specified mount-table specified in Config
    * @param config - the mount table keys are prefixed with 
@@ -314,13 +327,18 @@ abstract class InodeTree<T> {
       final String key = si.getKey();
       if (key.startsWith(mtPrefix)) {
         gotMountTableEntry = true;
-        boolean isMergeLink = false;
+        LinkType linkType = LinkType.SINGLE;
         String src = key.substring(mtPrefix.length());
         if (src.startsWith(linkPrefix)) {
           src = src.substring(linkPrefix.length());
         } else if (src.startsWith(linkMergePrefix)) { // A merge link
-          isMergeLink = true;
+          linkType = LinkType.MERGE;
           src = src.substring(linkMergePrefix.length());
+        } else if (src.startsWith(Constants.CONFIG_VIEWFS_LINK_CACHE)) {
+          // prefix.src
+          src = src.substring(Constants.CONFIG_VIEWFS_LINK_CACHE.length() + 1);
+
+          linkType = LinkType.CACHE;
         } else if (src.startsWith(Constants.CONFIG_VIEWFS_HOMEDIR)) {
           // ignore - we set home dir from config
           continue;
@@ -330,7 +348,7 @@ abstract class InodeTree<T> {
           src);
         }
         final String target = si.getValue(); // link or merge link
-        createLink(src, target, isMergeLink, ugi); 
+        createLink(src, target, linkType, ugi, config);
       }
     }
     if (!gotMountTableEntry) {

@@ -68,6 +68,13 @@ public class TestViewFsConfig {
           throws URISyntaxException, UnsupportedFileSystemException {
         return null;
       }
+
+       @Override
+       protected
+       Foo getTargetFileSystem(URI cacheURI, URI pURI)
+           throws URISyntaxException, UnsupportedFileSystemException {
+         return null;
+       }
     };
   }
 
