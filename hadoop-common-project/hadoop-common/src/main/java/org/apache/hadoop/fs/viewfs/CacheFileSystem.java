@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.Progressable;
 
 
@@ -54,6 +55,7 @@ public class CacheFileSystem extends FileSystem {
   private static URI myUri = URI.create("cache:///");
 
   public CacheFileSystem(URI cacheURI, URI pURI, Configuration conf) throws IOException {
+    setConf(conf);
     cacheFS = new ChRootedFileSystem(cacheURI, conf);
     pFS = new ChRootedFileSystem(pURI, conf);
   }
@@ -130,8 +132,15 @@ public class CacheFileSystem extends FileSystem {
     try {
       return cacheFS.open(f, bufferSize);
     } catch (FileNotFoundException e) {
-      cacheFS.create(f);
-      FileUtil.copy(pFS, f, cacheFS, f, false, getConf());
+      FSDataOutputStream out = cacheFS.create(f);
+      FSDataInputStream in = pFS.open(f);
+      /**
+       * Option 1: Direct transfer (via WebHDFS)
+       */
+      IOUtils.copyBytes(in, out, getConf());
+      /**
+       * Option 2: DistCP
+       */
       return cacheFS.open(f, bufferSize);
     }
   }
