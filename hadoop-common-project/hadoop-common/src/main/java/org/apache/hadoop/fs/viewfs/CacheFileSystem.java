@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
@@ -28,6 +29,7 @@ import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Progressable;
@@ -128,7 +130,9 @@ public class CacheFileSystem extends FileSystem {
     try {
       return cacheFS.open(f, bufferSize);
     } catch (FileNotFoundException e) {
-      return pFS.open(f, bufferSize);
+      cacheFS.create(f);
+      FileUtil.copy(pFS, f, cacheFS, f, false, getConf());
+      return cacheFS.open(f, bufferSize);
     }
   }
 
